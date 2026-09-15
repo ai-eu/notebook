@@ -20,8 +20,23 @@ from app.services.converter import (
     calculate_chunk_minutes,
 )
 from app.services.groq import GroqAuthError, resolve_groq_key
+from app.services.storage import telegram
+from app.services.storage.archive import archive_recording
 from app.services.transcriber import transcribe_file, transcribe_chunks
 from app.utils import resolve_recording_path, safe_delete
+
+
+async def _archive_to_telegram(recording_id: str) -> None:
+    """Copy the finished recording into the channel.
+
+    Runs after the transcript is saved, so the user sees the result immediately and a
+    failed upload never turns a good transcription into an error.
+    """
+    try:
+        result = await archive_recording(recording_id)
+        logging.info("Archived %s: %s file(s) uploaded", recording_id, result["uploaded"])
+    except Exception as exc:
+        logging.warning("Archiving %s failed: %s", recording_id, exc)
 
 
 async def process_recording(recording_id: str):
@@ -107,3 +122,6 @@ async def process_recording(recording_id: str):
             recording.updated_at = datetime.now(timezone.utc)
             await db.commit()
             # Keep files for diagnostics.
+
+        if recording.status == "done" and telegram.is_configured():
+            await _archive_to_telegram(recording_id)

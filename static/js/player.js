@@ -5,8 +5,44 @@ const prevPhraseBtn = document.getElementById('prev-phrase');
 const nextPhraseBtn = document.getElementById('next-phrase');
 const downloadLink = document.getElementById('download-link');
 const downloadLoader = document.getElementById('download-loader');
+const audioHint = document.getElementById('audio-hint');
 
 let sentences = [];
+
+// Audio that lives in the archive is downloaded on the first listen, which takes a
+// moment: say so instead of leaving a silent player on screen.
+const ARCHIVE_HINT_DELAY_MS = 800;
+let archiveHintTimer = null;
+
+function showAudioHint(text) {
+    if (!audioHint) return;
+    audioHint.textContent = text;
+    audioHint.classList.remove('hidden');
+}
+
+function hideAudioHint() {
+    if (archiveHintTimer) {
+        clearTimeout(archiveHintTimer);
+        archiveHintTimer = null;
+    }
+    if (audioHint) audioHint.classList.add('hidden');
+}
+
+player.addEventListener('waiting', () => {
+    if (archiveHintTimer || !player.paused) return;
+    archiveHintTimer = setTimeout(() => {
+        archiveHintTimer = null;
+        showAudioHint('Loading the audio from the archive…');
+    }, ARCHIVE_HINT_DELAY_MS);
+});
+
+player.addEventListener('canplay', hideAudioHint);
+player.addEventListener('playing', hideAudioHint);
+
+player.addEventListener('error', () => {
+    hideAudioHint();
+    showAudioHint('The audio is not available right now. Reload the page to try again.');
+});
 
 function formatDuration(seconds) {
     if (!seconds || isNaN(seconds)) return '';

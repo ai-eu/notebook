@@ -87,10 +87,16 @@ def _payload(response: httpx.Response) -> dict:
         raise TelegramError(f"Bot API returned a non-JSON response: {response.text[:200]}")
 
 
-async def _api_call(method: str, *, data: dict | None = None, files: dict | None = None) -> list | dict:
+async def _api_call(
+    method: str,
+    *,
+    data: dict | None = None,
+    files: dict | None = None,
+    retries: int | None = None,
+) -> list | dict:
     """POST a Bot API method, retrying network errors, 429 and 5xx."""
     url = _method_url(method)
-    attempts = max(1, settings.telegram_max_retries)
+    attempts = max(1, retries if retries is not None else settings.telegram_max_retries)
     for attempt in range(1, attempts + 1):
         _rewind(files)
         try:
@@ -219,5 +225,10 @@ async def copy_message(
     return result if isinstance(result, dict) else {}
 
 
-async def delete_message(message_id: int, *, chat_id: str | None = None) -> None:
-    await _api_call("deleteMessage", data={"chat_id": chat_id or channel_id(), "message_id": str(message_id)})
+async def delete_message(message_id: int, *, chat_id: str | None = None, retries: int = 1) -> None:
+    """Remove a message from the channel; used when a recording is deleted."""
+    await _api_call(
+        "deleteMessage",
+        data={"chat_id": chat_id or channel_id(), "message_id": str(message_id)},
+        retries=retries,
+    )

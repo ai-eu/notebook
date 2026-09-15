@@ -7,6 +7,7 @@ from app.database import AsyncSessionLocal
 from app.models import Recording, User
 from app.services import processing
 from app.services.groq import GroqAuthError
+from app.services.storage import archive
 
 KEY = "gsk_" + "a" * 52
 
@@ -116,5 +117,66 @@ def test_other_failures_keep_the_key_marked_as_valid(monkeypatch, tmp_path):
         assert recording.status == "error"
         assert "500" in recording.error_message
         assert user.key_valid is True
+
+    asyncio.run(scenario())
+
+
+def _stub_archive(monkeypatch, folder):
+    monkeypatch.setattr(archive, "resolve_recording_path", lambda path: folder)
+
+
+def test_a_finished_recording_is_copied_into_the_channel(monkeypatch, tmp_path, bot_api):
+    async def fake_transcribe(path, api_key, language=None):
+        return {"text": "hi", "segments": [], "duration": 5.0}
+
+    folder = _stub_media_pipeline(monkeypatch, tmp_path, fake_transcribe)
+    _stub_archive(monkeypatch, folder)
+
+    async def scenario():
+        _, recording_id = await _create_recording()
+        await processing.process_recording(recording_id)
+        recording, _ = await _load(recording_id)
+        assert recording.status == "done"
+        assert recording.storage_state == "tg"
+        assert recording.archived_at is not None
+        assert bot_api.calls.count("sendDocument") == 2
+
+    asyncio.run(scenario())
+
+
+def test_a_failed_transcription_is_not_archived(monkeypatch, tmp_path, bot_api):
+    async def fake_transcribe(path, api_key, language=None):
+        raise ValueError("Groq API error 500: boom")
+
+    folder = _stub_media_pipeline(monkeypatch, tmp_path, fake_transcribe)
+    _stub_archive(monkeypatch, folder)
+
+    async def scenario():
+        _, recording_id = await _create_recording()
+        await processing.process_recording(recording_id)
+        recording, _ = await _load(recording_id)
+        assert recording.status == "error"
+        assert recording.storage_state == "local"
+        assert bot_api.calls == []
+
+    asyncio.run(scenario())
+
+
+def test_a_broken_archive_does_not_fail_the_transcription(monkeypatch, tmp_path, bot_api):
+    async def fake_transcribe(path, api_key, language=None):
+        return {"text": "hi", "segments": [], "duration": 5.0}
+
+    folder = _stub_media_pipeline(monkeypatch, tmp_path, fake_transcribe)
+    _stub_archive(monkeypatch, folder)
+    bot_api.failures["sendDocument"] = [(500, {"ok": False, "description": "Internal Server Error"})] * 3
+
+    async def scenario():
+        _, recording_id = await _create_recording()
+        await processing.process_recording(recording_id)
+        recording, _ = await _load(recording_id)
+        # the transcript is what the user asked for; the channel can catch up later
+        assert recording.status == "done"
+        assert recording.storage_state == "local"
+        assert (folder / "transcript.json").exists()
 
     asyncio.run(scenario())

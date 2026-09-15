@@ -5,7 +5,7 @@ import re
 import shutil
 import tempfile
 import time
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from sqlalchemy import func, or_, select
@@ -18,6 +18,7 @@ from app.services.converter import (
     get_audio_bitrate_kbps,
     get_media_info,
     split_audio,
+    split_mp3_by_size,
 )
 from app.services.storage import telegram
 from app.utils import resolve_recording_path, safe_delete
@@ -84,11 +85,25 @@ async def plan_parts(folder: Path, audio_path: Path) -> list[Path]:
     if audio_path.stat().st_size <= _limit_bytes():
         return [audio_path]
 
+    # Cutting at frame boundaries keeps the parts byte-exact, so gluing them back
+    # reproduces the file the user uploaded.
+    parts = await asyncio.to_thread(
+        split_mp3_by_size, audio_path, folder / CHUNK_DIR_NAME, _limit_bytes()
+    )
+    if parts:
+        return parts
+
+    # Anything that is not a plain MPEG Layer III stream falls back to ffmpeg.
     info = await get_media_info(audio_path)
     bitrate = get_audio_bitrate_kbps(info) or settings.target_mp3_kbps
     minutes = calculate_chunk_minutes(bitrate, settings.telegram_chunk_mb, settings.chunk_max_minutes)
-    # audio.mp3 is always MP3, so a stream copy keeps the quality and the exact duration.
-    return await split_audio(audio_path, folder / CHUNK_DIR_NAME, minutes, passthrough=True)
+    return await split_audio(
+        audio_path,
+        folder / CHUNK_DIR_NAME,
+        minutes,
+        passthrough=True,
+        strip_headers=True,
+    )
 
 
 async def _stored_files(db, recording_id: str) -> dict[tuple[str, int], StoredFile]:
@@ -371,7 +386,7 @@ async def archived_recordings() -> list[str]:
     async with AsyncSessionLocal() as db:
         rows = (
             await db.execute(
-                select(Recording.recording_id).where(Recording.storage_state.in_(("tg", "partial")))
+                select(Recording.recording_id).where(Recording.storage_state.in_(("tg", "partial", "evicted")))
             )
         ).all()
     return [row[0] for row in rows]
@@ -393,3 +408,74 @@ async def status_summary() -> dict:
         "files": files or 0,
         "bytes_remote": int(bytes_remote or 0),
     }
+
+
+async def delete_remote_copy(recording_id: str) -> int:
+    """Drop the messages of a recording from the channel.
+
+    Best effort: a message Telegram refuses to delete (or a network hiccup) must not
+    block the deletion of the recording itself.
+    """
+    if not telegram.is_configured():
+        return 0
+    async with AsyncSessionLocal() as db:
+        rows = (
+            await db.execute(select(StoredFile).where(StoredFile.recording_id == recording_id))
+        ).scalars().all()
+
+    removed = 0
+    for row in rows:
+        if not row.tg_message_id:
+            continue
+        try:
+            await telegram.delete_message(row.tg_message_id, chat_id=row.tg_chat_id or None)
+            removed += 1
+        except telegram.TelegramError as exc:
+            logging.warning("Could not delete message %s of %s: %s", row.tg_message_id, recording_id, exc)
+    return removed
+
+
+async def cleanup_local_audio(*, now: datetime | None = None, dry_run: bool = False) -> dict:
+    """Drop the audio of recordings that have been in the channel for longer than the retention.
+
+    Transcripts stay on the server, and `keep_local` protects recordings that were
+    pulled back with `tg-restore`.
+    """
+    days = settings.audio_retention_days
+    if days <= 0:
+        return {"removed": 0, "freed_bytes": 0}
+    cutoff = (now or datetime.now(timezone.utc)) - timedelta(days=days)
+
+    async with AsyncSessionLocal() as db:
+        rows = (
+            await db.execute(
+                select(Recording).where(
+                    Recording.storage_state == "tg",
+                    Recording.keep_local.is_(False),
+                    Recording.archived_at.is_not(None),
+                    Recording.archived_at < cutoff,
+                )
+            )
+        ).scalars().all()
+
+        removed = 0
+        freed = 0
+        for recording in rows:
+            folder = resolve_recording_path(recording.folder_path)
+            audio = folder / "audio.mp3"
+            if audio.exists():
+                freed += audio.stat().st_size
+                removed += 1
+                if not dry_run:
+                    safe_delete(audio)
+            if not dry_run:
+                # The chunks were only needed for the upload.
+                safe_delete(folder / "chunks")
+                safe_delete(folder / CHUNK_DIR_NAME)
+                recording.storage_state = "evicted"
+        if not dry_run:
+            await db.commit()
+
+    if removed and not dry_run:
+        logging.info("Dropped %s local audio file(s), freed %s bytes", removed, freed)
+    return {"removed": removed, "freed_bytes": freed}

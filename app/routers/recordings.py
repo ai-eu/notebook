@@ -1,7 +1,7 @@
 import json
 import re
 from pathlib import Path
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, status
 from fastapi.responses import FileResponse, JSONResponse, Response
 from app.config import settings
 from sqlalchemy import select
@@ -11,6 +11,9 @@ from app.auth import require_user
 from app.models import User, Recording
 from app.services.formatter import format_transcript
 from app.services.groq import resolve_groq_key
+from app.services.storage.archive import delete_remote_copy
+from app.services.storage.cache import drop as drop_cached
+from app.services.storage.cache import ensure_cached
 from app.utils import resolve_recording_path, safe_delete
 
 router = APIRouter(prefix="/api", tags=["recordings"])
@@ -96,7 +99,13 @@ async def get_recording_audio(
     recording = await _get_user_recording(recording_id, user, db)
     audio_path = resolve_recording_path(recording.folder_path) / "audio.mp3"
     if not audio_path.exists():
-        raise HTTPException(status_code=404, detail="Audio file not found")
+        # The audio was moved into the channel; pull it back on the first listen.
+        audio_path = await ensure_cached(recording_id)
+    if not audio_path or not audio_path.exists():
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="The audio is in the archive and could not be downloaded right now. Please try again.",
+        )
     return FileResponse(audio_path, media_type="audio/mpeg", filename="audio.mp3")
 
 
@@ -107,6 +116,9 @@ async def delete_recording(
     db: AsyncSession = Depends(get_db),
 ):
     recording = await _get_user_recording(recording_id, user, db)
+    # Drop the copies in the channel and in the cache before the row goes away.
+    await delete_remote_copy(recording_id)
+    drop_cached(recording_id)
     safe_delete(resolve_recording_path(recording.folder_path))
     await db.delete(recording)
     await db.commit()

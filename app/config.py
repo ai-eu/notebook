@@ -52,6 +52,12 @@ class Settings(BaseSettings):
     telegram_timeout: float = 60.0
     telegram_download_timeout: float = 300.0
     telegram_max_retries: int = 3
+    # Days a local audio file is kept after it is safely stored in the channel (0 = forever).
+    # Transcripts always stay on the server.
+    audio_retention_days: int = 14
+    # Folder for audio pulled back from the channel, relative to DATA_DIR
+    cache_dir: str = ".cache"
+    cache_max_mb: int = 2048
 
     @property
     def data_dir_absolute(self) -> Path:

@@ -1,5 +1,6 @@
 import argparse
 import asyncio
+import sys
 from datetime import datetime, timezone
 from sqlalchemy import select
 from app.config import settings
@@ -7,7 +8,8 @@ from app.database import init_db, AsyncSessionLocal
 from app.models import User
 from app.auth import delete_user_sessions
 from app.services.groq import is_groq_key_format, mask_key, validate_key
-from app.services.storage import archive, telegram
+from app.services.storage import archive, cache, telegram
+from app.services.storage.cache import cache_stats
 from app.utils import user_data_dir, safe_delete
 
 
@@ -146,6 +148,10 @@ async def tg_status():
     states = ", ".join(f"{state}={count}" for state, count in sorted(summary["states"].items()))
     print(f"Recordings: {summary['recordings']} ({states or 'none'})")
     print(f"Files in the channel: {summary['files']} ({_human_mb(summary['bytes_remote'])})")
+    cache = cache_stats()
+    print(f"Audio cache: {cache['files']} file(s) ({_human_mb(cache['bytes'])}, limit {settings.cache_max_mb} MB)")
+    retention = f"{settings.audio_retention_days} day(s)" if settings.audio_retention_days > 0 else "disabled"
+    print(f"Local audio retention: {retention}")
     if telegram.is_configured():
         pending = await archive.pending_recordings()
         print(f"Waiting to be archived: {len(pending)}")
@@ -209,7 +215,26 @@ async def tg_restore(recording_id: str, force: bool = False):
         print(f"Local copy already exists: {path} (use --force to download it again)")
 
 
+async def tg_cleanup(dry_run: bool = False):
+    await ensure_tables()
+    retention = settings.audio_retention_days
+    if retention <= 0:
+        print("AUDIO_RETENTION_DAYS is 0, so local audio is never dropped.")
+        return
+    result = await archive.cleanup_local_audio(dry_run=dry_run)
+    verb = "Would drop" if dry_run else "Dropped"
+    print(f"{verb} {result['removed']} local audio file(s), {_human_mb(result['freed_bytes'])}")
+    cache_result = await cache.cleanup_cache()
+    print(f"Cache: {cache_result['removed']} file(s) removed, {_human_mb(cache_result['freed_bytes'])}")
+
+
 def main():
+    # Windows consoles often use a legacy code page that cannot print chat titles
+    # or user labels, which are usually Cyrillic here.
+    for stream in (sys.stdout, sys.stderr):
+        if hasattr(stream, "reconfigure"):
+            stream.reconfigure(encoding="utf-8", errors="replace")
+
     parser = argparse.ArgumentParser(description="User management and Telegram archive")
     sub = parser.add_subparsers(dest="cmd", required=True)
 
@@ -246,6 +271,9 @@ def main():
     p_restore.add_argument("recording_id")
     p_restore.add_argument("--force", action="store_true", help="Overwrite an existing local copy")
 
+    p_cleanup = sub.add_parser("tg-cleanup", help="Drop local audio that is already in the channel")
+    p_cleanup.add_argument("--dry-run", action="store_true", help="Only report what would be dropped")
+
     args = parser.parse_args()
     if args.cmd == "add-user":
         asyncio.run(add_user(args.label, args.key, verify=not args.no_verify))
@@ -267,6 +295,8 @@ def main():
         asyncio.run(tg_verify(args.recording_id, repair=not args.no_repair))
     elif args.cmd == "tg-restore":
         asyncio.run(tg_restore(args.recording_id, force=args.force))
+    elif args.cmd == "tg-cleanup":
+        asyncio.run(tg_cleanup(dry_run=args.dry_run))
 
 
 if __name__ == "__main__":

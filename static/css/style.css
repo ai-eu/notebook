@@ -429,6 +429,12 @@ h2 {
     font-size: 0.9rem;
 }
 
+.audio-hint {
+    margin-left: 0.6rem;
+    color: var(--muted);
+    font-style: italic;
+}
+
 .transcript-container {
     font-size: 1.15rem;
     line-height: 1.7;
