@@ -11,6 +11,7 @@ FastAPI web app for drag-and-drop audio/video upload, automatic MP3 conversion, 
 - Supports audio/video formats including Apple files: `.mp3`, `.wav`, `.ogg`, `.flac`, `.m4a`, `.aac`, `.caf`, `.aif`, `.aiff`, `.wma`, `.amr`, `.3gp`, `.webm`, `.mp4`, `.mov`, `.mkv`.
 - SQLite database with relative recording folder paths (`<user_id>/<recording_id>`) so the `data/` directory and database can be moved between servers.
 - Sign-in with a personal Groq API key: the key is stored with the account and used for that user's transcriptions, so everyone runs on their own quota.
+- Optional Telegram archive: finished recordings are copied into a private channel and pulled back on demand, so the server does not have to keep every lecture forever. Users of the app do not need a Telegram account.
 - Optional Groq-powered TXT formatting (`SMART_FORMAT`) for splitting long lines.
 - Light and dark theme: follows the system theme, switched manually from the upload page.
 
@@ -70,6 +71,55 @@ python -m app.cli rebind-key <user_id> gsk_...
 python -m app.cli verify-key <user_id>
 python -m app.cli delete-user <user_id> [--purge-files]
 ```
+
+## Telegram archive (optional)
+
+Finished recordings can be copied into a **private Telegram channel** that only you can
+see: the audio is uploaded in parts and downloaded again when it is needed. The app talks
+to Telegram from the server, so nobody who uses the app needs a Telegram account.
+
+Setup:
+
+1. Create a bot with [@BotFather](https://t.me/BotFather) and copy its token.
+2. Create a **private** channel (no public username, no invite links) and add the bot as
+   an administrator with the "Post messages" right — bots can only join a channel as admins.
+3. Post anything in the channel, then read the channel id from the bot updates:
+
+```bash
+python -m app.cli tg-discover
+```
+
+4. Put the values into `.env`:
+
+```
+TELEGRAM_ENABLED=true
+TELEGRAM_BOT_TOKEN=123456789:AA...
+TELEGRAM_CHAT_ID=-1001234567890
+```
+
+Commands:
+
+```bash
+python -m app.cli tg-status                    # configuration and counters
+python -m app.cli tg-backfill                  # upload recordings that are not archived yet
+python -m app.cli tg-backfill --limit 5
+python -m app.cli tg-verify                    # check the archive, refresh expired file ids
+python -m app.cli tg-restore <recording_id>    # download a recording back to the server
+```
+
+How it works:
+
+- The audio is uploaded in parts of `TELEGRAM_CHUNK_MB` (19 MB by default), because
+  Telegram hands back at most 20 MiB per `getFile`. Parts are stored with their index, so
+  they can be glued back together byte for byte.
+- Every message carries a caption with the recording id, the part number and the sha256 of
+  the file, so the channel stays readable even if `app.db` is lost. The database keeps the
+  `file_id` of every part; if Telegram expires a `file_id`, the stored message id is used
+  to mint a fresh one.
+- `transcript.json` and the formatted text stay on the server and are backed up into the
+  channel as well.
+- Uploads are throttled (`TELEGRAM_SEND_INTERVAL_SECONDS`), because a channel accepts
+  roughly 20 messages per minute. Archive a large backlog with `tg-backfill`.
 
 ## Users and keys
 

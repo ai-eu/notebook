@@ -39,6 +39,20 @@ class Settings(BaseSettings):
     # otherwise clients can spoof their address and dodge the login rate limit.
     trust_proxy_headers: bool = False
 
+    # Telegram archive: finished recordings are copied into a private channel, so the
+    # server only keeps a local copy (see AUDIO_RETENTION_DAYS in a later phase).
+    telegram_enabled: bool = False
+    telegram_bot_token: str | None = None
+    telegram_chat_id: str | None = None
+    telegram_api_base: str = "https://api.telegram.org"
+    # Telegram hands back at most 20 MiB per getFile, so parts have to stay below that.
+    telegram_chunk_mb: int = 19
+    # Channels accept roughly 20 messages per minute.
+    telegram_send_interval_seconds: float = 3.0
+    telegram_timeout: float = 60.0
+    telegram_download_timeout: float = 300.0
+    telegram_max_retries: int = 3
+
     @property
     def data_dir_absolute(self) -> Path:
         return (Path.cwd() / self.data_dir).resolve()

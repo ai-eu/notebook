@@ -1,6 +1,6 @@
 from fastapi import FastAPI
 from fastapi.staticfiles import StaticFiles
-from app.database import engine, Base
+from app.database import init_db
 from app.routers import auth, pages, upload, recordings
 
 app = FastAPI(title="Dictaphone Transcriber")
@@ -15,5 +15,4 @@ app.include_router(recordings.router)
 
 @app.on_event("startup")
 async def startup():
-    async with engine.begin() as conn:
-        await conn.run_sync(Base.metadata.create_all)
+    await init_db()
