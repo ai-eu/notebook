@@ -3,7 +3,30 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="theme-color" content="#f8f9fa">
     <title>{% block title %}Transcriber{% endblock %}</title>
+    <script>
+        (function () {
+            const COLORS = { light: '#f8f9fa', dark: '#121212' };
+            const media = window.matchMedia('(prefers-color-scheme: dark)');
+
+            window.applyTheme = function (theme, persist) {
+                document.documentElement.dataset.theme = theme;
+                const meta = document.querySelector('meta[name="theme-color"]');
+                if (meta) meta.content = COLORS[theme];
+                if (persist) localStorage.setItem('theme', theme);
+            };
+
+            const stored = localStorage.getItem('theme');
+            window.applyTheme(stored || (media.matches ? 'dark' : 'light'));
+
+            media.addEventListener('change', (event) => {
+                if (!localStorage.getItem('theme')) {
+                    window.applyTheme(event.matches ? 'dark' : 'light');
+                }
+            });
+        })();
+    </script>
     <link rel="stylesheet" href="/static/css/style.css">
 </head>
 <body>

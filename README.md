@@ -12,6 +12,7 @@ FastAPI web app for drag-and-drop audio/video upload, automatic MP3 conversion, 
 - SQLite database with relative recording folder paths (`<user_id>/<recording_id>`) so the `data/` directory and database can be moved between servers.
 - Sign-in with a personal Groq API key: the key is stored with the account and used for that user's transcriptions, so everyone runs on their own quota.
 - Optional Groq-powered TXT formatting (`SMART_FORMAT`) for splitting long lines.
+- Light and dark theme: follows the system theme, switched manually from the upload page.
 
 ## Requirements
 

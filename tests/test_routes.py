@@ -22,6 +22,28 @@ def test_login_page_asks_for_a_groq_key():
     asyncio.run(scenario())
 
 
+def test_pages_bootstrap_the_color_theme():
+    async def scenario():
+        async with _client() as client:
+            response = await client.get("/api/auth/login")
+            assert response.status_code == 200
+            assert 'name="theme-color"' in response.text
+            assert "window.applyTheme" in response.text
+
+    asyncio.run(scenario())
+
+
+def test_index_offers_the_theme_toggle():
+    async def scenario():
+        async with _client() as client:
+            await client.post("/api/auth/login", data={"key": KEY})
+            response = await client.get("/")
+            assert response.status_code == 200
+            assert 'id="theme-toggle"' in response.text
+
+    asyncio.run(scenario())
+
+
 def test_recordings_require_a_session():
     async def scenario():
         async with _client() as client:
