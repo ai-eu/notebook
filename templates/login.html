@@ -1,0 +1,15 @@
+{% extends "base.html" %}
+{% block title %}Sign in{% endblock %}
+{% block content %}
+<div class="container">
+    <h1>Sign in</h1>
+    <p>Enter your invitation key:</p>
+    <form action="/api/auth/login" method="post">
+        <input type="password" name="key" required autofocus placeholder="Key">
+        <button type="submit">Sign in</button>
+    </form>
+    {% if error %}
+    <p class="error">{{ error }}</p>
+    {% endif %}
+</div>
+{% endblock %}

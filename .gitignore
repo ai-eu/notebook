@@ -1,0 +1,11 @@
+.env
+venv/
+__pycache__/
+*.pyc
+app.db
+*.db-shm
+*.db-wal
+data/
+test_audio/
+cookies.txt
+*.log

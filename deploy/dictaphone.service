@@ -1,0 +1,16 @@
+[Unit]
+Description=Dictaphone Transcriber
+After=network.target
+
+[Service]
+Type=simple
+User=www-data
+Group=www-data
+WorkingDirectory=/opt/dictaphone
+EnvironmentFile=/opt/dictaphone/.env
+ExecStart=/opt/dictaphone/venv/bin/uvicorn app.main:app --host 127.0.0.1 --port 8000
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

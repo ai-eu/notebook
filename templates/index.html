@@ -1,0 +1,24 @@
+{% extends "base.html" %}
+{% block title %}Upload{% endblock %}
+{% block content %}
+<div class="container">
+    <header>
+        <span>{{ user.label or 'User' }}</span>
+        <a href="/api/auth/logout">Log out</a>
+    </header>
+    <h1>Upload an audio/video recording</h1>
+    <div id="dropzone" class="dropzone">
+        <p>Drag and drop a file here or click to select</p>
+        <input type="file" id="fileinput" accept="audio/*,video/*" style="display:none">
+    </div>
+    <div id="progress-area" class="progress-area hidden">
+        <div class="progress-bar"><div id="progress-fill" class="progress-fill"></div></div>
+        <p id="progress-text">Uploading...</p>
+    </div>
+    <h2>History</h2>
+    <div id="recordings"></div>
+</div>
+{% endblock %}
+{% block scripts %}
+<script src="/static/js/app.js"></script>
+{% endblock %}
