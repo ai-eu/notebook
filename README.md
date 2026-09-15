@@ -10,7 +10,7 @@ FastAPI web app for drag-and-drop audio/video upload, automatic MP3 conversion, 
 - Automatic chunking of long recordings: chunk duration is chosen based on the output audio bitrate so each chunk fits `TARGET_CHUNK_MB` and Groq's 25 MB limit.
 - Supports audio/video formats including Apple files: `.mp3`, `.wav`, `.ogg`, `.flac`, `.m4a`, `.aac`, `.caf`, `.aif`, `.aiff`, `.wma`, `.amr`, `.3gp`, `.webm`, `.mp4`, `.mov`, `.mkv`.
 - SQLite database with relative recording folder paths (`<user_id>/<recording_id>`) so the `data/` directory and database can be moved between servers.
-- Invitation-key authentication; admin keys can view all users' recordings.
+- Sign-in with a personal Groq API key: the key is stored with the account and used for that user's transcriptions, so everyone runs on their own quota.
 - Optional Groq-powered TXT formatting (`SMART_FORMAT`) for splitting long lines.
 
 ## Requirements
@@ -18,7 +18,7 @@ FastAPI web app for drag-and-drop audio/video upload, automatic MP3 conversion, 
 - Python 3.11+
 - `ffmpeg` + `ffprobe`
 - Debian/Ubuntu VPS (for deployment)
-- Groq API key: https://console.groq.com/keys
+- A Groq API key per user: https://console.groq.com/keys
 
 ## Local run (Windows / Linux)
 
@@ -26,7 +26,7 @@ FastAPI web app for drag-and-drop audio/video upload, automatic MP3 conversion, 
 # Clone/copy the project
 cd dictaphone
 
-# Create .env from the example and fill in GROQ_API_KEY
+# Create .env from the example
 cp .env.example .env
 # edit .env
 
@@ -36,15 +36,12 @@ venv\Scripts\activate  # Windows
 
 pip install -r requirements.txt
 
-# Create the first admin/user key
-python -m app.cli create-key "Admin" --admin
-
 # Run (no reload, so background tasks are not killed)
 venv\Scripts\uvicorn app.main:app --host 0.0.0.0 --port 8000
 # Linux: venv/bin/uvicorn app.main:app --host 0.0.0.0 --port 8000
 ```
 
-Open http://localhost:8000 and enter the key.
+Open http://localhost:8000 and sign in with a Groq API key (https://console.groq.com/keys).
 
 ## Test mode without Groq
 
@@ -54,31 +51,39 @@ For local UI testing without a real key:
 MOCK_TRANSCRIPTION=true venv/bin/uvicorn app.main:app --host 0.0.0.0 --port 8000
 ```
 
-## Key management (CLI)
+## Tests
 
 ```bash
-python -m app.cli create-key "User name"
-python -m app.cli create-key "Admin" --admin
-python -m app.cli list-keys
-python -m app.cli revoke-key <user_id>
+pip install -r requirements-dev.txt
+pytest
 ```
 
-## Administration
-
-Keys created with `--admin` can view all users' recordings through the API:
+## User management (CLI)
 
 ```bash
-# List all recordings (GET)
-curl -b cookies.txt "http://localhost:8000/api/admin/recordings"
-
-# View any recording transcript (GET)
-curl -b cookies.txt "http://localhost:8000/api/admin/recordings/{recording_id}"
-
-# Download TXT for any recording (GET)
-curl -b cookies.txt "http://localhost:8000/api/admin/recordings/{recording_id}/download"
+# Register a user in advance (required when ALLOW_SELF_REGISTRATION=false)
+python -m app.cli add-user "User name" --key gsk_...
+python -m app.cli list-users
+# Replace a user's key, keeping their recordings (e.g. after rotating it at Groq)
+python -m app.cli rebind-key <user_id> gsk_...
+python -m app.cli verify-key <user_id>
+python -m app.cli delete-user <user_id> [--purge-files]
 ```
 
-Users without the `--admin` flag see only their own recordings.
+## Users and keys
+
+Everyone signs in with their own Groq API key and sees only their own recordings — there is no
+admin role. By default any valid Groq key can register an account; set
+`ALLOW_SELF_REGISTRATION=false` to accept only keys pre-registered with `add-user`.
+
+The key is checked against the Groq API on sign-in. If Groq later rejects a stored key (revoked
+or rotated), the account is flagged and new uploads fail with a clear message until the user
+signs in with a valid key — previously saved transcripts stay accessible. Because the key *is*
+the account identity, a brand new key creates a new account; use `rebind-key` to keep the
+history of an existing one.
+
+> **Note:** API keys are stored in the database in plain text, because they have to be replayed
+> to Groq on every transcription. Keep `app.db` (and its backups) private and never publish `data/`.
 
 ## Data structure
 
@@ -114,19 +119,13 @@ sudo chown -R www-data:www-data /opt/dictaphone
 ```bash
 cd /opt/dictaphone
 sudo -u www-data cp .env.example .env
-# edit .env: GROQ_API_KEY, SESSION_COOKIE_SECURE=true
+# edit .env: SESSION_COOKIE_SECURE=true, TRUST_PROXY_HEADERS=true (the app runs behind nginx)
 
 sudo -u www-data python3.11 -m venv venv
 sudo -u www-data venv/bin/pip install -r requirements.txt
 ```
 
-4. Create the first key:
-
-```bash
-sudo -u www-data venv/bin/python -m app.cli create-key "Admin" --admin
-```
-
-5. Systemd:
+4. Systemd:
 
 ```bash
 sudo cp deploy/dictaphone.service /etc/systemd/system/
@@ -134,7 +133,7 @@ sudo systemctl daemon-reload
 sudo systemctl enable --now dictaphone
 ```
 
-6. Nginx + HTTPS:
+5. Nginx + HTTPS:
 
 ```bash
 sudo cp deploy/nginx.conf /etc/nginx/sites-available/dictaphone

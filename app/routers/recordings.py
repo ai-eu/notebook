@@ -7,15 +7,16 @@ from app.config import settings
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from app.database import get_db
-from app.auth import require_user, require_admin
+from app.auth import require_user
 from app.models import User, Recording
 from app.services.formatter import format_transcript
+from app.services.groq import resolve_groq_key
 from app.utils import resolve_recording_path, safe_delete
 
 router = APIRouter(prefix="/api", tags=["recordings"])
 
 
-def _recording_to_dict(recording: Recording, include_transcript: bool = False, include_user: bool = False) -> dict:
+def _recording_to_dict(recording: Recording, include_transcript: bool = False) -> dict:
     data = {
         "recording_id": recording.recording_id,
         "original_filename": recording.original_filename,
@@ -25,8 +26,6 @@ def _recording_to_dict(recording: Recording, include_transcript: bool = False, i
         "duration": recording.duration,
         "error_message": recording.error_message,
     }
-    if include_user:
-        data["user_id"] = recording.user_id
     if include_transcript:
         transcript_path = resolve_recording_path(recording.folder_path) / "transcript.json"
         if transcript_path.exists():
@@ -150,7 +149,11 @@ async def download_recording(
 
     if formatted is None:
         transcript = json.loads(transcript_path.read_text(encoding="utf-8"))
-        formatted = await format_transcript(transcript, use_groq=use_groq)
+        formatted = await format_transcript(
+            transcript,
+            api_key=resolve_groq_key(user),
+            use_groq=use_groq,
+        )
         try:
             cache_path.write_text(formatted, encoding="utf-8")
         except OSError:
@@ -158,90 +161,6 @@ async def download_recording(
 
     filename = _txt_filename(recording)
 
-    return Response(
-        content=formatted.encode("utf-8"),
-        media_type="text/plain; charset=utf-8",
-        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
-    )
-
-
-async def _get_any_recording(recording_id: str, db: AsyncSession) -> Recording:
-    result = await db.execute(select(Recording).where(Recording.recording_id == recording_id))
-    recording = result.scalar_one_or_none()
-    if not recording:
-        raise HTTPException(status_code=404, detail="Recording not found")
-    return recording
-
-
-@router.get("/admin/recordings", tags=["admin"])
-async def list_all_recordings(
-    admin: User = Depends(require_admin),
-    db: AsyncSession = Depends(get_db),
-):
-    result = await db.execute(select(Recording).order_by(Recording.created_at.desc()))
-    recordings = result.scalars().all()
-    return [_recording_to_dict(r, include_user=True) for r in recordings]
-
-
-@router.get("/admin/recordings/{recording_id}", tags=["admin"])
-async def get_any_recording(
-    recording_id: str,
-    admin: User = Depends(require_admin),
-    db: AsyncSession = Depends(get_db),
-):
-    recording = await _get_any_recording(recording_id, db)
-    return _recording_to_dict(recording, include_transcript=True, include_user=True)
-
-
-@router.get("/admin/recordings/{recording_id}/audio", tags=["admin"])
-async def get_any_recording_audio(
-    recording_id: str,
-    admin: User = Depends(require_admin),
-    db: AsyncSession = Depends(get_db),
-):
-    recording = await _get_any_recording(recording_id, db)
-    audio_path = resolve_recording_path(recording.folder_path) / "audio.mp3"
-    if not audio_path.exists():
-        raise HTTPException(status_code=404, detail="Audio file not found")
-    return FileResponse(audio_path, media_type="audio/mpeg", filename="audio.mp3")
-
-
-@router.get("/admin/recordings/{recording_id}/download", tags=["admin"])
-async def download_any_recording(
-    recording_id: str,
-    smart: bool = Query(False, description="Use Groq to split long lines"),
-    refresh: bool = Query(False, description="Recreate the cache, ignoring the saved formatted text"),
-    admin: User = Depends(require_admin),
-    db: AsyncSession = Depends(get_db),
-):
-    recording = await _get_any_recording(recording_id, db)
-    transcript_path = resolve_recording_path(recording.folder_path) / "transcript.json"
-    if not transcript_path.exists():
-        raise HTTPException(status_code=404, detail="Transcript not found")
-
-    use_groq = smart or settings.smart_format
-    cache_name = "formatted-smart.txt" if use_groq else "formatted.txt"
-    cache_path = resolve_recording_path(recording.folder_path) / cache_name
-
-    formatted = None
-    if not refresh and cache_path.exists():
-        try:
-            transcript_mtime = transcript_path.stat().st_mtime
-            cache_mtime = cache_path.stat().st_mtime
-            if cache_mtime >= transcript_mtime:
-                formatted = cache_path.read_text(encoding="utf-8")
-        except OSError:
-            pass
-
-    if formatted is None:
-        transcript = json.loads(transcript_path.read_text(encoding="utf-8"))
-        formatted = await format_transcript(transcript, use_groq=use_groq)
-        try:
-            cache_path.write_text(formatted, encoding="utf-8")
-        except OSError:
-            pass
-
-    filename = _txt_filename(recording)
     return Response(
         content=formatted.encode("utf-8"),
         media_type="text/plain; charset=utf-8",

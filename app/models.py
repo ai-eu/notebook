@@ -12,12 +12,12 @@ class User(Base):
     __tablename__ = "users"
 
     id = Column(Integer, primary_key=True, index=True)
-    key_hash = Column(String(255), nullable=False)
-    key_lookup_hash = Column(String(64), unique=True, index=True, nullable=False)
+    groq_key = Column(String(128), unique=True, index=True, nullable=False)
     label = Column(String(255), nullable=True)
-    is_admin = Column(Boolean, default=False)
+    key_valid = Column(Boolean, default=True)
     created_at = Column(DateTime, default=now_utc)
     last_seen_at = Column(DateTime, default=now_utc, onupdate=now_utc)
+    last_verified_at = Column(DateTime, nullable=True)
 
     sessions = relationship("Session", back_populates="user", cascade="all, delete-orphan")
     recordings = relationship("Recording", back_populates="user", cascade="all, delete-orphan")

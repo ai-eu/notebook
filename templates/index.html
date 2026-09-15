@@ -6,6 +6,9 @@
         <span>{{ user.label or 'User' }}</span>
         <a href="/api/auth/logout">Log out</a>
     </header>
+    {% if not user.key_valid %}
+    <p class="error">Groq rejected your API key. Log out and sign in with a valid one to keep transcribing.</p>
+    {% endif %}
     <h1>Upload an audio/video recording</h1>
     <div id="dropzone" class="dropzone">
         <p>Drag and drop a file here or click to select</p>

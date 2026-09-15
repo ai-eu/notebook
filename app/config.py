@@ -13,7 +13,7 @@ class Settings(BaseSettings):
         extra="ignore",
     )
 
-    groq_api_key: str
+    groq_api_key: str | None = None
     database_url: str = "sqlite+aiosqlite:///app.db"
     data_dir: Path = Path("data")
     upload_max_size_mb: int = 500
@@ -30,6 +30,14 @@ class Settings(BaseSettings):
     groq_chat_model: str = "openai/gpt-oss-20b"
     whisper_model: str = "whisper-large-v3"
     whisper_prompt: str = "Please transcribe with proper punctuation, sentence breaks, and paragraph breaks."
+    allow_self_registration: bool = True
+    validate_groq_key_on_login: bool = True
+    groq_validation_timeout: float = 10.0
+    login_rate_limit_attempts: int = 10
+    login_rate_limit_window_seconds: int = 60
+    # Only enable behind a reverse proxy that overwrites X-Forwarded-For / X-Real-IP,
+    # otherwise clients can spoof their address and dodge the login rate limit.
+    trust_proxy_headers: bool = False
 
     @property
     def data_dir_absolute(self) -> Path:

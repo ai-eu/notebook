@@ -6,7 +6,7 @@ import traceback
 from datetime import datetime, timezone
 from sqlalchemy import select
 from app.database import AsyncSessionLocal
-from app.models import Recording
+from app.models import Recording, User
 from app.config import settings
 from app.services.converter import (
     convert_to_mp3,
@@ -19,6 +19,7 @@ from app.services.converter import (
     get_audio_bitrate_kbps,
     calculate_chunk_minutes,
 )
+from app.services.groq import GroqAuthError, resolve_groq_key
 from app.services.transcriber import transcribe_file, transcribe_chunks
 from app.utils import resolve_recording_path, safe_delete
 
@@ -29,6 +30,10 @@ async def process_recording(recording_id: str):
         recording = result.scalar_one_or_none()
         if not recording:
             return
+
+        # The key belongs to the uploader: transcription runs on their quota.
+        user = await db.get(User, recording.user_id)
+        api_key = resolve_groq_key(user)
 
         recording.status = "processing"
         recording.updated_at = datetime.now(timezone.utc)
@@ -75,9 +80,9 @@ async def process_recording(recording_id: str):
                 chunk_paths = await split_audio(audio_path, chunks_dir, chunk_minutes, passthrough=passthrough)
 
             if len(chunk_paths) == 1:
-                transcript = await transcribe_file(audio_path)
+                transcript = await transcribe_file(audio_path, api_key)
             else:
-                transcript = await transcribe_chunks(chunk_paths)
+                transcript = await transcribe_chunks(chunk_paths, api_key)
 
             transcript_path.write_text(json.dumps(transcript, ensure_ascii=False, indent=2), encoding="utf-8")
 
@@ -86,6 +91,15 @@ async def process_recording(recording_id: str):
             recording.updated_at = datetime.now(timezone.utc)
             await db.commit()
 
+        except GroqAuthError as exc:
+            logging.warning("Groq rejected the API key of user %s: %s", recording.user_id, exc)
+            if user:
+                user.key_valid = False
+            recording.status = "error"
+            recording.error_message = "Groq rejected the API key. Sign in again with a valid key."
+            recording.updated_at = datetime.now(timezone.utc)
+            await db.commit()
+            # Keep files for diagnostics.
         except Exception as exc:
             logging.exception("process_recording failed for %s", recording_id)
             recording.status = "error"

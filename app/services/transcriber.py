@@ -4,9 +4,10 @@ from pathlib import Path
 import httpx
 from app.config import settings
 from app.services.converter import get_duration
+from app.services.groq import GROQ_API_BASE, GroqAuthError
 
 
-GROQ_TRANSCRIPTION_URL = "https://api.groq.com/openai/v1/audio/transcriptions"
+GROQ_TRANSCRIPTION_URL = f"{GROQ_API_BASE}/audio/transcriptions"
 
 MOCK_TEXTS = [
     "This is a test recording.",
@@ -35,13 +36,16 @@ async def _mock_transcribe(mp3_path: Path) -> dict:
     }
 
 
-async def transcribe_file(mp3_path: Path, language: str | None = None) -> dict:
+async def transcribe_file(mp3_path: Path, api_key: str | None, language: str | None = None) -> dict:
     file_size_mb = mp3_path.stat().st_size / (1024 * 1024)
     if file_size_mb > 25:
         raise ValueError(f"File too large for Groq: {file_size_mb:.2f} MB > 25 MB")
 
     if settings.mock_transcription:
         return await _mock_transcribe(mp3_path)
+
+    if not api_key:
+        raise ValueError("No Groq API key available for this user")
 
     mime, _ = mimetypes.guess_type(str(mp3_path))
     if not mime:
@@ -59,7 +63,7 @@ async def transcribe_file(mp3_path: Path, language: str | None = None) -> dict:
     async with httpx.AsyncClient(timeout=300.0) as client:
         with open(mp3_path, "rb") as f:
             files = {"file": (mp3_path.name, f, mime)}
-            headers = {"Authorization": f"Bearer {settings.groq_api_key}"}
+            headers = {"Authorization": f"Bearer {api_key}"}
             response = await client.post(
                 GROQ_TRANSCRIPTION_URL,
                 data=data,
@@ -67,13 +71,16 @@ async def transcribe_file(mp3_path: Path, language: str | None = None) -> dict:
                 headers=headers,
             )
 
+    if response.status_code in (401, 403):
+        raise GroqAuthError(f"Groq rejected the API key (HTTP {response.status_code})")
+
     if response.status_code != 200:
         raise ValueError(f"Groq API error {response.status_code}: {response.text}")
 
     return response.json()
 
 
-async def transcribe_chunks(chunk_paths: list[Path], language: str | None = None) -> dict:
+async def transcribe_chunks(chunk_paths: list[Path], api_key: str | None, language: str | None = None) -> dict:
     all_segments = []
     full_texts = []
     detected_language = None
@@ -81,7 +88,7 @@ async def transcribe_chunks(chunk_paths: list[Path], language: str | None = None
     offset = 0.0
 
     for chunk_path in chunk_paths:
-        result = await transcribe_file(chunk_path, language=language)
+        result = await transcribe_file(chunk_path, api_key, language=language)
         chunk_duration = result.get("duration", 0.0)
         for segment in result.get("segments", []):
             shifted = dict(segment)

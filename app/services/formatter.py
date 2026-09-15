@@ -184,6 +184,10 @@ async def _post_to_groq(payload: dict[str, Any], headers: dict[str, str], max_re
                 await asyncio.sleep(wait)
                 continue
 
+            if response.status_code in (401, 403):
+                logging.warning("Groq rejected the API key (HTTP %s)", response.status_code)
+                return None
+
             if response.status_code >= 400:
                 body = response.text[:500]
                 logging.warning("Groq HTTP %s: %s", response.status_code, body)
@@ -195,9 +199,13 @@ async def _post_to_groq(payload: dict[str, Any], headers: dict[str, str], max_re
     return None
 
 
-async def _split_long_sentence_with_groq(text: str, max_len: int = MAX_LINE_LENGTH) -> list[str] | None:
+async def _split_long_sentence_with_groq(
+    text: str,
+    api_key: str | None,
+    max_len: int = MAX_LINE_LENGTH,
+) -> list[str] | None:
     """Try to split a long sentence via the Groq Chat API with retries and a modest max_tokens."""
-    if not settings.groq_api_key:
+    if not api_key:
         return None
 
     payload = {
@@ -210,7 +218,7 @@ async def _split_long_sentence_with_groq(text: str, max_len: int = MAX_LINE_LENG
         "max_tokens": _estimate_max_tokens(len(text)),
     }
     headers = {
-        "Authorization": f"Bearer {settings.groq_api_key}",
+        "Authorization": f"Bearer {api_key}",
         "Content-Type": "application/json",
     }
 
@@ -253,7 +261,12 @@ async def _split_long_sentence_with_groq(text: str, max_len: int = MAX_LINE_LENG
     return None
 
 
-async def _reformat_long_lines(text: str, use_groq: bool = False, max_len: int = MAX_LINE_LENGTH) -> str:
+async def _reformat_long_lines(
+    text: str,
+    api_key: str | None = None,
+    use_groq: bool = False,
+    max_len: int = MAX_LINE_LENGTH,
+) -> str:
     """Split long lines locally by punctuation.
     If a clause is still longer than max_len, send it to Groq.
     Without Groq, long meaningful clauses are left unchanged (we do not wrap by spaces)."""
@@ -272,8 +285,8 @@ async def _reformat_long_lines(text: str, use_groq: bool = False, max_len: int =
         for clause in clauses:
             if len(clause) <= max_len:
                 result.append(clause)
-            elif use_groq and settings.groq_api_key:
-                groq_lines = await _split_long_sentence_with_groq(clause, max_len)
+            elif use_groq and api_key:
+                groq_lines = await _split_long_sentence_with_groq(clause, api_key, max_len)
                 if groq_lines:
                     result.extend(groq_lines)
                 else:
@@ -318,16 +331,20 @@ def _build_paragraphs(segments: list[dict[str, Any]]) -> list[str]:
     return paragraphs
 
 
-async def format_transcript(transcript: dict[str, Any], use_groq: bool = False) -> str:
+async def format_transcript(
+    transcript: dict[str, Any],
+    api_key: str | None = None,
+    use_groq: bool = False,
+) -> str:
     """Format the transcript: paragraphs by pauses, sentences by .!?,
     and very long lines are additionally split locally or via Groq."""
-    if use_groq and not settings.groq_api_key:
-        logging.warning("SMART_FORMAT is enabled, but GROQ_API_KEY is not set — smart splitting will not be used.")
+    if use_groq and not api_key:
+        logging.warning("Smart formatting is enabled, but the user has no Groq API key — smart splitting will not be used.")
 
     segments = transcript.get("segments") or []
     if not segments:
         text = _format_text(transcript.get("text", ""))
-        return await _reformat_long_lines(text, use_groq=use_groq)
+        return await _reformat_long_lines(text, api_key, use_groq=use_groq)
 
     paragraphs = _build_paragraphs(segments)
     formatted: list[str] = []
@@ -336,4 +353,8 @@ async def format_transcript(transcript: dict[str, Any], use_groq: bool = False) 
         sentences = _split_into_sentences(para)
         formatted.append("\n".join(sentences) if sentences else "")
 
-    return await _reformat_long_lines("\n\n".join(p for p in formatted if p).strip(), use_groq=use_groq)
+    return await _reformat_long_lines(
+        "\n\n".join(p for p in formatted if p).strip(),
+        api_key,
+        use_groq=use_groq,
+    )

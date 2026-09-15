@@ -3,13 +3,14 @@
 {% block content %}
 <div class="container">
     <h1>Sign in</h1>
-    <p>Enter your invitation key:</p>
+    <p>Enter your Groq API key. It is used for your transcriptions and stays with your account:</p>
     <form action="/api/auth/login" method="post">
-        <input type="password" name="key" required autofocus placeholder="Key">
+        <input type="password" name="key" required autofocus autocomplete="off" placeholder="gsk_...">
         <button type="submit">Sign in</button>
     </form>
     {% if error %}
     <p class="error">{{ error }}</p>
     {% endif %}
+    <p>No key yet? Create one at <a href="https://console.groq.com/keys" target="_blank" rel="noopener">console.groq.com/keys</a>.</p>
 </div>
 {% endblock %}
