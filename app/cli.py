@@ -2,12 +2,18 @@ import argparse
 import asyncio
 from datetime import datetime, timezone
 from sqlalchemy import select, delete as sa_delete
-from app.database import AsyncSessionLocal
+from app.database import engine, Base, AsyncSessionLocal
 from app.models import User
 from app.auth import generate_key, hash_key, get_key_lookup_hash
 
 
+async def ensure_tables():
+    async with engine.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
+
+
 async def create_key(label: str, is_admin: bool = False):
+    await ensure_tables()
     async with AsyncSessionLocal() as db:
         key = generate_key()
         user = User(
@@ -25,6 +31,7 @@ async def create_key(label: str, is_admin: bool = False):
 
 
 async def list_keys():
+    await ensure_tables()
     async with AsyncSessionLocal() as db:
         result = await db.execute(select(User).order_by(User.created_at))
         for u in result.scalars():
@@ -32,6 +39,7 @@ async def list_keys():
 
 
 async def revoke_key(user_id: int):
+    await ensure_tables()
     async with AsyncSessionLocal() as db:
         await db.execute(sa_delete(User).where(User.id == user_id))
         await db.commit()
