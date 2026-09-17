@@ -36,7 +36,7 @@ def test_new_columns_are_added_to_an_existing_database(tmp_path):
         Base.metadata.create_all(conn)
         _add_missing_columns(conn)
         columns = {column["name"] for column in inspect(conn).get_columns("recordings")}
-        assert {"storage_state", "archived_at"} <= columns
+        assert {"storage_state", "archived_at", "tags", "comment"} <= columns
         assert {"stored_files"} <= set(inspect(conn).get_table_names())
         # the row that existed before the upgrade keeps its data and gets the default
         assert conn.execute(text("SELECT recording_id, storage_state FROM recordings")).one() == ("rec-1", "local")

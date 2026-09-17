@@ -27,6 +27,9 @@
             <span id="audio-hint" class="audio-hint hidden"></span>
         </div>
     </div>
+    {% if recording.comment %}
+    <p class="recording-comment">{{ recording.comment }}</p>
+    {% endif %}
     <div class="transcript-container" id="transcript"></div>
 </div>
 {% endblock %}

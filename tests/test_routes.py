@@ -257,3 +257,42 @@ def test_transcript_page_offers_playback_speed_control():
             assert 'id="speed-slider"' in response.text
 
     asyncio.run(scenario())
+
+
+def test_recording_tags_and_comment_can_be_updated():
+    async def scenario():
+        async with _client() as client:
+            await client.post("/api/auth/login", data={"key": KEY})
+            await _create_recording(await _signed_in_user_id())
+
+            response = await client.put(
+                "/api/recordings/rec-1/tags",
+                json={"tags": "  lecture   bom   lecture ", "comment": "  first lecture  "},
+            )
+
+            assert response.status_code == 200
+            assert response.json()["tags"] == "lecture bom"
+            assert response.json()["comment"] == "first lecture"
+
+            listing = (await client.get("/api/recordings")).json()
+            assert listing[0]["tags"] == "lecture bom"
+            assert listing[0]["comment"] == "first lecture"
+
+            cleared = await client.put(
+                "/api/recordings/rec-1/tags",
+                json={"tags": "", "comment": ""},
+            )
+            assert cleared.status_code == 200
+            assert cleared.json()["tags"] == ""
+            assert cleared.json()["comment"] is None
+
+    asyncio.run(scenario())
+
+
+def test_tags_require_a_session():
+    async def scenario():
+        async with _client() as client:
+            response = await client.put("/api/recordings/rec-1/tags", json={"tags": "x", "comment": ""})
+            assert response.status_code == 401
+
+    asyncio.run(scenario())

@@ -9,6 +9,7 @@ FastAPI web app for drag-and-drop audio/video upload, automatic MP3 conversion, 
 - MP3 files with a bitrate up to 196 kbps are copied as-is (`-c:a copy`) to avoid re-encoding already-compressed audio.
 - Automatic chunking of long recordings: chunk duration is chosen based on the output audio bitrate so each chunk fits `TARGET_CHUNK_MB` and Groq's 25 MB limit.
 - Playback speed control (0.5–2×): a compact button on the player opens a vertical slider; the chosen speed is remembered between visits.
+- Tags and a comment per recording: tags show as colored chips on the card (edit via the tag icon in the card corner), the comment is shown above the transcript on the transcript page.
 - Supports audio/video formats including Apple files: `.mp3`, `.wav`, `.ogg`, `.flac`, `.m4a`, `.aac`, `.caf`, `.aif`, `.aiff`, `.wma`, `.amr`, `.3gp`, `.webm`, `.mp4`, `.mov`, `.mkv`.
 - SQLite database with relative recording folder paths (`<user_id>/<recording_id>`) so the `data/` directory and database can be moved between servers.
 - Sign-in with a personal Groq API key: the key is stored with the account and used for that user's transcriptions, so everyone runs on their own quota.

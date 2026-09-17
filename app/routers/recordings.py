@@ -3,6 +3,7 @@ import re
 from pathlib import Path
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from fastapi.responses import FileResponse, JSONResponse, Response
+from pydantic import BaseModel
 from app.config import settings
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -29,6 +30,8 @@ def _recording_to_dict(recording: Recording, include_transcript: bool = False) -
         "updated_at": recording.updated_at.isoformat() if recording.updated_at else None,
         "duration": recording.duration,
         "error_message": recording.error_message,
+        "tags": recording.tags or "",
+        "comment": recording.comment,
         "txt_ready": (folder / "formatted.txt").exists(),
     }
     if include_transcript:
@@ -92,6 +95,31 @@ async def get_recording_status(
         "error_message": recording.error_message,
         "txt_ready": formatted_path.exists(),
     }
+
+
+class TagsUpdate(BaseModel):
+    tags: str = ""
+    comment: str = ""
+
+
+def _normalize_tags(raw: str) -> str:
+    # Split on any whitespace, drop duplicates keeping the first occurrence
+    tags = [tag[:50] for tag in dict.fromkeys(raw.split())]
+    return " ".join(tags[:20])
+
+
+@router.put("/recordings/{recording_id}/tags")
+async def update_recording_tags(
+    recording_id: str,
+    payload: TagsUpdate,
+    user: User = Depends(require_user),
+    db: AsyncSession = Depends(get_db),
+):
+    recording = await _get_user_recording(recording_id, user, db)
+    recording.tags = _normalize_tags(payload.tags) or None
+    recording.comment = payload.comment.strip() or None
+    await db.commit()
+    return _recording_to_dict(recording)
 
 
 @router.get("/recordings/{recording_id}/audio")

@@ -51,6 +51,9 @@ class Recording(Base):
     archived_at = Column(DateTime, nullable=True)
     # Set by `tg-restore`: the local copy was asked for, so the cleanup must keep it
     keep_local = Column(Boolean, default=False)
+    # User-defined labels separated by spaces, and a free-form note shown above the transcript
+    tags = Column(String(500), nullable=True)
+    comment = Column(Text, nullable=True)
     created_at = Column(DateTime, default=now_utc)
     updated_at = Column(DateTime, default=now_utc, onupdate=now_utc)
 
