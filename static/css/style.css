@@ -502,6 +502,13 @@ h2 {
     min-width: 260px;
 }
 
+/* Volume is handled by the custom control, so the native mute button goes away.
+   Works in WebKit/Blink (Chrome, Edge, Safari); Firefox does not allow
+   hiding individual native controls. */
+.player-bar audio::-webkit-media-controls-mute-button {
+    display: none;
+}
+
 .phrase-btn {
     padding: 0.45rem 0.9rem;
     background: var(--surface-hover);
@@ -515,6 +522,94 @@ h2 {
 
 .phrase-btn:hover {
     background: var(--surface-active);
+}
+
+.volume-control {
+    position: relative;
+    display: inline-flex;
+}
+
+.volume-btn {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 2.4rem;
+    height: 2.2rem;
+    padding: 0;
+}
+
+.volume-btn svg {
+    display: none;
+    width: 1.1rem;
+    height: 1.1rem;
+}
+
+.volume-btn:not(.muted) .icon-vol,
+.volume-btn.muted .icon-mute {
+    display: block;
+}
+
+.volume-popup {
+    display: none;
+    position: absolute;
+    bottom: calc(100% + 12px);
+    left: 50%;
+    transform: translateX(-50%);
+    flex-direction: column;
+    align-items: center;
+    gap: 0.35rem;
+    padding: 0.6rem 0.55rem;
+    background: var(--surface);
+    border: 1px solid var(--border-strong);
+    border-radius: 8px;
+    box-shadow: 0 2px 10px var(--shadow);
+    z-index: 101;
+}
+
+.volume-popup::after {
+    content: '';
+    position: absolute;
+    top: 100%;
+    left: 50%;
+    transform: translateX(-50%);
+    border: 6px solid transparent;
+    border-top-color: var(--border-strong);
+}
+
+.volume-value {
+    color: var(--muted);
+    font-size: 0.85rem;
+    font-variant-numeric: tabular-nums;
+}
+
+/* The input is rotated to stand upright; the box holds its visual footprint
+   because transforms do not change the layout size. */
+.volume-slider-box {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 1.5rem;
+    height: 7.5rem;
+}
+
+.volume-slider {
+    width: 7.5rem;
+    margin: 0;
+    transform: rotate(-90deg);
+    accent-color: var(--primary);
+    cursor: pointer;
+}
+
+/* Hover opens the popup only on devices that really have a hover pointer;
+   touch screens use the .open class toggled from JS. */
+@media (hover: hover) {
+    .volume-control:hover .volume-popup {
+        display: flex;
+    }
+}
+
+.volume-control.open .volume-popup {
+    display: flex;
 }
 
 .player-bar a {

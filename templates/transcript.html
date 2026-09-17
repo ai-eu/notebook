@@ -6,6 +6,18 @@
         <div class="player-bar">
             <button id="prev-phrase" class="phrase-btn" type="button" title="Previous phrase">&larr;</button>
             <audio id="player" controls src="/api/recordings/{{ recording.recording_id }}/audio"></audio>
+            <div class="volume-control" id="volume-control">
+                <button id="volume-btn" class="phrase-btn volume-btn" type="button" title="Volume" aria-haspopup="true" aria-expanded="false">
+                    <svg class="icon-vol" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"/><path d="M15.54 8.46a5 5 0 0 1 0 7.07"/><path d="M19.07 4.93a10 10 0 0 1 0 14.14"/></svg>
+                    <svg class="icon-mute" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"/><line x1="23" y1="9" x2="17" y2="15"/><line x1="17" y1="9" x2="23" y2="15"/></svg>
+                </button>
+                <div class="volume-popup" id="volume-popup">
+                    <span class="volume-value" id="volume-value">100%</span>
+                    <div class="volume-slider-box">
+                        <input type="range" id="volume-slider" class="volume-slider" min="0" max="1" step="0.05" value="1" aria-label="Volume">
+                    </div>
+                </div>
+            </div>
             <button id="next-phrase" class="phrase-btn" type="button" title="Next phrase">&rarr;</button>
             <a href="/api/recordings/{{ recording.recording_id }}/download" class="download-link{% if not txt_ready %} hidden{% endif %}" id="download-link" download title="Download TXT" aria-label="Download TXT">
                 <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
