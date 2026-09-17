@@ -4,6 +4,11 @@ const progressArea = document.getElementById('progress-area');
 const progressFill = document.getElementById('progress-fill');
 const progressText = document.getElementById('progress-text');
 const recordingsContainer = document.getElementById('recordings');
+const tagsFilterContainer = document.getElementById('tags-filter');
+
+const ACTIVE_TAG_KEY = 'activeTag';
+let activeTag = localStorage.getItem(ACTIVE_TAG_KEY) || '';
+let currentRecordings = [];
 
 if (dropzone) {
     ['dragenter', 'dragover', 'dragleave', 'drop'].forEach(eventName => {
@@ -90,6 +95,38 @@ function renderTags(tags) {
     return `<div class="recording-tags">${chips}</div>`;
 }
 
+function uniqueTags(recordings) {
+    const tags = new Set();
+    for (const r of recordings) {
+        for (const tag of (r.tags || '').split(/\s+/)) {
+            if (tag) tags.add(tag);
+        }
+    }
+    return [...tags].sort((a, b) => a.localeCompare(b, undefined, { sensitivity: 'base' }));
+}
+
+function setActiveTag(tag) {
+    activeTag = tag;
+    if (tag) localStorage.setItem(ACTIVE_TAG_KEY, tag);
+    else localStorage.removeItem(ACTIVE_TAG_KEY);
+}
+
+function renderTagFilter(recordings) {
+    if (!tagsFilterContainer) return;
+    const tags = uniqueTags(recordings);
+    // The saved filter is stale when its tag is gone from every recording
+    if (activeTag && !tags.includes(activeTag)) setActiveTag('');
+    if (!tags.length) {
+        tagsFilterContainer.innerHTML = '';
+        tagsFilterContainer.classList.add('hidden');
+        return;
+    }
+    tagsFilterContainer.classList.remove('hidden');
+    tagsFilterContainer.innerHTML = tags.map(tag =>
+        `<button type="button" class="tag-chip${tag === activeTag ? ' active' : ''}" data-tag="${escapeHtml(tag)}">${escapeHtml(tag)}</button>`
+    ).join('');
+}
+
 function uploadFile(file) {
     if (!file) return;
     const formData = new FormData();
@@ -155,12 +192,7 @@ function pollStatus(recordingId) {
     }, 2000);
 }
 
-function renderRecordings(recordings) {
-    if (!recordingsContainer) return;
-    if (!recordings.length) {
-        recordingsContainer.innerHTML = '<p>No recordings yet.</p>';
-        return;
-    }
+function renderCards(recordings) {
     recordingsContainer.innerHTML = recordings.map(r => {
         const duration = r.duration ? ` (${formatDuration(r.duration)})` : '';
         const title = r.original_filename || 'Untitled';
@@ -189,6 +221,22 @@ function renderRecordings(recordings) {
             </div>
         `;
     }).join('');
+}
+
+function renderRecordings(recordings) {
+    if (!recordingsContainer) return;
+    currentRecordings = recordings;
+    renderTagFilter(recordings);
+    const visible = activeTag
+        ? recordings.filter(r => (r.tags || '').split(/\s+/).includes(activeTag))
+        : recordings;
+    if (!visible.length) {
+        recordingsContainer.innerHTML = activeTag
+            ? '<p>No recordings with this tag.</p>'
+            : '<p>No recordings yet.</p>';
+        return;
+    }
+    renderCards(visible);
 }
 
 async function loadRecordings() {
@@ -252,13 +300,19 @@ if (recordingsContainer) {
         try {
             const res = await fetch(`/api/recordings/${recordingId}`, { method: 'DELETE' });
             if (!res.ok) throw new Error('Delete error');
-            btn.closest('.recording-row')?.remove();
-            if (!recordingsContainer.querySelectorAll('.recording-row').length) {
-                recordingsContainer.innerHTML = '<p>No recordings yet.</p>';
-            }
+            loadRecordings();
         } catch (e) {
             alert('Could not delete the recording');
         }
+    });
+}
+
+if (tagsFilterContainer) {
+    tagsFilterContainer.addEventListener('click', (e) => {
+        const chip = e.target.closest('.tag-chip');
+        if (!chip) return;
+        setActiveTag(chip.dataset.tag === activeTag ? '' : chip.dataset.tag);
+        renderRecordings(currentRecordings);
     });
 }
 

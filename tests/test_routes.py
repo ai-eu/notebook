@@ -296,3 +296,14 @@ def test_tags_require_a_session():
             assert response.status_code == 401
 
     asyncio.run(scenario())
+
+
+def test_index_offers_the_tag_filter_bar():
+    async def scenario():
+        async with _client() as client:
+            await client.post("/api/auth/login", data={"key": KEY})
+            response = await client.get("/")
+            assert response.status_code == 200
+            assert 'id="tags-filter"' in response.text
+
+    asyncio.run(scenario())
