@@ -44,6 +44,7 @@ async def transcript_page(
 
     transcript = None
     transcript_path = resolve_recording_path(recording.folder_path) / "transcript.json"
+    formatted_path = resolve_recording_path(recording.folder_path) / "formatted.txt"
     if transcript_path.exists():
         transcript = json.loads(transcript_path.read_text(encoding="utf-8"))
 
@@ -54,5 +55,6 @@ async def transcript_page(
             "user": user,
             "recording": recording,
             "transcript": transcript,
+            "txt_ready": formatted_path.exists(),
         },
     )

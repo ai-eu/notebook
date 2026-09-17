@@ -14,6 +14,13 @@ def test_caption_round_trip():
     assert parsed == {"rid": "rec-1", "kind": "audio", "part": "2/3", "size": "12345", "sha": "ab" * 32}
 
 
+def test_caption_label_cannot_shadow_metadata():
+    caption = archive.build_caption("rec-1", "audio", 0, 1, 1, "ab" * 32, label="🎙 rid=fake;sha=bad — audio")
+    parsed = archive.parse_caption(caption)
+    assert parsed["rid"] == "rec-1"
+    assert parsed["sha"] == "ab" * 32
+
+
 def test_small_audio_is_uploaded_as_a_single_part(monkeypatch, tmp_path, bot_api):
     folder = make_recording(monkeypatch, tmp_path, audio=b"x" * 1024)
 
@@ -75,9 +82,12 @@ def test_archive_uploads_audio_and_transcript(monkeypatch, tmp_path, bot_api):
     assert audio_row.sha256 == audio_sha
     assert audio_row.size_bytes == (folder / "audio.mp3").stat().st_size
     assert bot_api.files[audio_row.tg_file_id] == (folder / "audio.mp3").read_bytes()
-    assert bot_api.messages[audio_row.tg_message_id]["caption"] == archive.build_caption(
-        "rec-1", "audio", 0, 1, audio_row.size_bytes, audio_sha
+    caption = bot_api.messages[audio_row.tg_message_id]["caption"]
+    assert caption.startswith("🎙 lecture.m4a — audio")
+    assert caption.endswith(
+        archive.build_caption("rec-1", "audio", 0, 1, audio_row.size_bytes, audio_sha)
     )
+    assert archive.parse_caption(caption)["rid"] == "rec-1"
 
     recording = asyncio.run(load_recording("rec-1"))
     assert recording.storage_state == "tg"

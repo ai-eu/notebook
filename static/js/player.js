@@ -190,15 +190,19 @@ function statusLabel(status) {
 }
 
 function pollStatus() {
-    if (window.TRANSCRIPT) return;
+    if (window.TRANSCRIPT && window.TXT_READY) return;
     const interval = setInterval(async () => {
         try {
             const res = await fetch(`/api/recordings/${window.RECORDING_ID}/status`);
             const data = await res.json();
             if (statusEl) statusEl.textContent = `${window.ORIGINAL_FILENAME} — ${statusLabel(data.status)}`;
+            if (data.txt_ready && downloadLink) {
+                window.TXT_READY = true;
+                downloadLink.classList.remove('hidden');
+            }
             if (data.status === 'done' || data.status === 'error') {
                 clearInterval(interval);
-                window.location.reload();
+                if (!window.TRANSCRIPT) window.location.reload();
             }
         } catch (e) {}
     }, 2000);

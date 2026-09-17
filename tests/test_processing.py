@@ -4,7 +4,7 @@ from sqlalchemy import select
 
 from app.config import settings
 from app.database import AsyncSessionLocal
-from app.models import Recording, User
+from app.models import Recording, StoredFile, User
 from app.services import processing
 from app.services.groq import GroqAuthError
 from app.services.storage import archive
@@ -73,7 +73,7 @@ def test_transcription_uses_the_key_of_the_uploader(monkeypatch, tmp_path):
         captured["api_key"] = api_key
         return {"text": "hi", "segments": [], "duration": 5.0}
 
-    _stub_media_pipeline(monkeypatch, tmp_path, fake_transcribe)
+    folder = _stub_media_pipeline(monkeypatch, tmp_path, fake_transcribe)
 
     async def scenario():
         _, recording_id = await _create_recording()
@@ -83,6 +83,7 @@ def test_transcription_uses_the_key_of_the_uploader(monkeypatch, tmp_path):
         assert recording.status == "done"
         assert recording.duration == 5.0
         assert user.key_valid is True
+        assert (folder / "formatted.txt").read_text(encoding="utf-8") == "hi"
 
     asyncio.run(scenario())
 
@@ -139,7 +140,16 @@ def test_a_finished_recording_is_copied_into_the_channel(monkeypatch, tmp_path, 
         assert recording.status == "done"
         assert recording.storage_state == "tg"
         assert recording.archived_at is not None
-        assert bot_api.calls.count("sendDocument") == 2
+        assert bot_api.calls.count("sendDocument") == 3
+        async with AsyncSessionLocal() as db:
+            files = (
+                await db.execute(select(StoredFile).where(StoredFile.recording_id == recording_id))
+            ).scalars().all()
+        assert {(row.kind, row.idx) for row in files} == {
+            ("audio", 0),
+            ("transcript", 0),
+            ("formatted", 0),
+        }
 
     asyncio.run(scenario())
 

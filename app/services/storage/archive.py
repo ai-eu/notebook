@@ -35,13 +35,45 @@ ARTIFACTS = (
 _last_send_at = 0.0
 
 
-def build_caption(recording_id: str, kind: str, idx: int, total: int, size: int, sha256: str) -> str:
-    """The caption is the only index that survives a lost database."""
-    return f"rid={recording_id};kind={kind};part={idx + 1}/{total};size={size};sha={sha256}"
+KIND_LABELS = {"audio": "audio", "transcript": "transcript", "formatted": "formatted text"}
+
+
+def _human_label(recording: Recording, kind: str, idx: int, total: int) -> str:
+    """A readable first caption line: what the file is, which recording it belongs to."""
+    name = (recording.original_filename or recording.recording_id).replace("\n", " ").replace(";", ",").strip()
+    kind_label = KIND_LABELS.get(kind, kind)
+    part = f" part {idx + 1}/{total}" if total > 1 else ""
+    bits = [f"🎙 {name} — {kind_label}{part}"]
+    if recording.duration:
+        seconds = int(recording.duration)
+        bits.append(f"{seconds // 60}:{seconds % 60:02d}" if seconds < 3600 else f"{seconds // 3600}:{seconds % 3600 // 60:02d}:{seconds % 60:02d}")
+    if recording.created_at:
+        bits.append(recording.created_at.strftime("%Y-%m-%d"))
+    return " · ".join(bits)
+
+
+def build_caption(
+    recording_id: str,
+    kind: str,
+    idx: int,
+    total: int,
+    size: int,
+    sha256: str,
+    label: str | None = None,
+) -> str:
+    """The metadata line is the only index that survives a lost database.
+
+    It goes last so a stray ``key=value`` inside the human-readable label can never
+    shadow the real fields in parse_caption (later matches win).
+    """
+    meta = f"rid={recording_id};kind={kind};part={idx + 1}/{total};size={size};sha={sha256}"
+    return f"{label}\n{meta}" if label else meta
 
 
 def parse_caption(caption: str) -> dict:
-    return dict(re.findall(r"(\w+)=([^;]+)", caption or ""))
+    # [^;\n] keeps a value from spilling onto the metadata line when the caption
+    # has a human-readable first line containing "key=value"-looking text.
+    return dict(re.findall(r"(\w+)=([^;\n]+)", caption or ""))
 
 
 def _limit_bytes() -> int:
@@ -126,7 +158,15 @@ async def _upload_part(
 ) -> StoredFile:
     size = path.stat().st_size
     digest = await _sha256(path)
-    caption = build_caption(recording.recording_id, kind, idx, total, size, digest)
+    caption = build_caption(
+        recording.recording_id,
+        kind,
+        idx,
+        total,
+        size,
+        digest,
+        label=_human_label(recording, kind, idx, total),
+    )
     message = await telegram.send_document(path, caption=caption, mime_type=mime_type)
 
     document = message.get("document") or message.get("audio") or {}
