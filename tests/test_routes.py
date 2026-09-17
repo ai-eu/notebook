@@ -41,6 +41,26 @@ async def _create_recording(user_id: int, recording_id: str = "rec-1", audio: by
     return folder
 
 
+def test_txt_download_appears_only_when_the_file_is_ready():
+    async def scenario():
+        async with _client() as client:
+            await client.post("/api/auth/login", data={"key": KEY})
+            folder = await _create_recording(await _signed_in_user_id())
+
+            pending_page = await client.get("/t/rec-1")
+            assert 'id="download-link"' in pending_page.text
+            assert 'download-link hidden' in pending_page.text
+            assert (await client.get("/api/recordings/rec-1/status")).json()["txt_ready"] is False
+
+            (folder / "formatted.txt").write_text("hi", encoding="utf-8")
+
+            ready_page = await client.get("/t/rec-1")
+            assert 'download-link hidden' not in ready_page.text
+            assert (await client.get("/api/recordings/rec-1/status")).json()["txt_ready"] is True
+
+    asyncio.run(scenario())
+
+
 def test_login_page_asks_for_a_groq_key():
     async def scenario():
         async with _client() as client:

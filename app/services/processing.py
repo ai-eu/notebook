@@ -20,6 +20,7 @@ from app.services.converter import (
     calculate_chunk_minutes,
 )
 from app.services.groq import GroqAuthError, resolve_groq_key
+from app.services.formatter import format_transcript
 from app.services.storage import telegram
 from app.services.storage.archive import archive_recording
 from app.services.transcriber import transcribe_file, transcribe_chunks
@@ -59,6 +60,7 @@ async def process_recording(recording_id: str):
             original_path = folder / "original.tmp"
             audio_path = folder / "audio.mp3"
             transcript_path = folder / "transcript.json"
+            formatted_path = folder / "formatted.txt"
 
             if not original_path.exists():
                 raise ValueError("Original file not found")
@@ -100,6 +102,14 @@ async def process_recording(recording_id: str):
                 transcript = await transcribe_chunks(chunk_paths, api_key)
 
             transcript_path.write_text(json.dumps(transcript, ensure_ascii=False, indent=2), encoding="utf-8")
+            formatted = await format_transcript(
+                transcript,
+                api_key=api_key,
+                use_groq=settings.smart_format,
+            )
+            formatted_path.write_text(formatted, encoding="utf-8")
+            if settings.smart_format:
+                (folder / "formatted-smart.txt").write_text(formatted, encoding="utf-8")
 
             recording.status = "done"
             recording.duration = duration

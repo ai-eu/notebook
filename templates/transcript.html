@@ -7,7 +7,7 @@
             <button id="prev-phrase" class="phrase-btn" type="button" title="Previous phrase">&larr;</button>
             <audio id="player" controls src="/api/recordings/{{ recording.recording_id }}/audio"></audio>
             <button id="next-phrase" class="phrase-btn" type="button" title="Next phrase">&rarr;</button>
-            <a href="/api/recordings/{{ recording.recording_id }}/download" class="download-link" id="download-link" download>
+            <a href="/api/recordings/{{ recording.recording_id }}/download" class="download-link{% if not txt_ready %} hidden{% endif %}" id="download-link" download>
                 <span class="download-text">Download TXT</span>
                 <span class="loader hidden" id="download-loader"></span>
             </a>
@@ -26,6 +26,7 @@
 window.RECORDING_ID = "{{ recording.recording_id }}";
 window.ORIGINAL_FILENAME = "{{ recording.original_filename | e }}";
 window.TRANSCRIPT = {{ transcript | tojson | safe }};
+window.TXT_READY = {{ txt_ready | tojson }};
 </script>
 <script src="/static/js/player.js"></script>
 {% endblock %}

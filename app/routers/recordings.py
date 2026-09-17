@@ -20,6 +20,7 @@ router = APIRouter(prefix="/api", tags=["recordings"])
 
 
 def _recording_to_dict(recording: Recording, include_transcript: bool = False) -> dict:
+    folder = resolve_recording_path(recording.folder_path)
     data = {
         "recording_id": recording.recording_id,
         "original_filename": recording.original_filename,
@@ -28,9 +29,10 @@ def _recording_to_dict(recording: Recording, include_transcript: bool = False) -
         "updated_at": recording.updated_at.isoformat() if recording.updated_at else None,
         "duration": recording.duration,
         "error_message": recording.error_message,
+        "txt_ready": (folder / "formatted.txt").exists(),
     }
     if include_transcript:
-        transcript_path = resolve_recording_path(recording.folder_path) / "transcript.json"
+        transcript_path = folder / "transcript.json"
         if transcript_path.exists():
             data["transcript"] = json.loads(transcript_path.read_text(encoding="utf-8"))
         else:
@@ -82,11 +84,13 @@ async def get_recording_status(
     db: AsyncSession = Depends(get_db),
 ):
     recording = await _get_user_recording(recording_id, user, db)
+    formatted_path = resolve_recording_path(recording.folder_path) / "formatted.txt"
     return {
         "recording_id": recording.recording_id,
         "status": recording.status,
         "duration": recording.duration,
         "error_message": recording.error_message,
+        "txt_ready": formatted_path.exists(),
     }
 
 
