@@ -517,79 +517,6 @@ h2 {
     background: var(--surface-active);
 }
 
-.speed-control {
-    position: relative;
-    display: inline-flex;
-}
-
-.speed-btn {
-    min-width: 3.4rem;
-    font-size: 0.95rem;
-    font-weight: 500;
-    font-variant-numeric: tabular-nums;
-}
-
-.speed-popup {
-    display: none;
-    position: absolute;
-    bottom: calc(100% + 12px);
-    left: 50%;
-    transform: translateX(-50%);
-    flex-direction: column;
-    padding: 0.3rem;
-    background: var(--surface);
-    border: 1px solid var(--border-strong);
-    border-radius: 8px;
-    box-shadow: 0 2px 10px var(--shadow);
-    z-index: 101;
-    min-width: 4.2rem;
-}
-
-.speed-popup::after {
-    content: '';
-    position: absolute;
-    top: 100%;
-    left: 50%;
-    transform: translateX(-50%);
-    border: 6px solid transparent;
-    border-top-color: var(--border-strong);
-}
-
-.speed-option {
-    padding: 0.35rem 0.85rem;
-    background: none;
-    border: none;
-    border-radius: 6px;
-    color: var(--text);
-    font-size: 0.9rem;
-    font-variant-numeric: tabular-nums;
-    text-align: center;
-    cursor: pointer;
-    white-space: nowrap;
-}
-
-.speed-option:hover {
-    background: var(--surface-hover);
-}
-
-.speed-option.active {
-    background: var(--primary-tint);
-    color: var(--primary);
-    font-weight: 600;
-}
-
-/* Hover opens the popup only on devices that really have a hover pointer;
-   touch screens use the .open class toggled from JS. */
-@media (hover: hover) {
-    .speed-control:hover .speed-popup {
-        display: flex;
-    }
-}
-
-.speed-control.open .speed-popup {
-    display: flex;
-}
-
 .player-bar a {
     color: var(--primary);
     text-decoration: none;
@@ -599,14 +526,44 @@ h2 {
 .player-bar .download-link {
     display: inline-flex;
     align-items: center;
-    gap: 0.5rem;
-    padding: 0.45rem 0.9rem;
+    justify-content: center;
+    gap: 0.4rem;
+    width: 2.4rem;
+    height: 2.2rem;
+    padding: 0;
     background: var(--button-bg, var(--primary-fill));
     color: var(--on-primary);
     border-radius: 6px;
-    font-weight: 500;
-    font-size: 0.9rem;
     transition: background-color 0.15s, opacity 0.15s;
+}
+
+.player-bar .download-link svg {
+    width: 1.1rem;
+    height: 1.1rem;
+    flex: none;
+}
+
+.player-bar .back-link {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 2.4rem;
+    height: 2.2rem;
+    padding: 0;
+    background: var(--surface-hover);
+    border: 1px solid var(--border-strong);
+    border-radius: 6px;
+    color: var(--text);
+    transition: background-color 0.15s;
+}
+
+.player-bar .back-link:hover {
+    background: var(--surface-active);
+}
+
+.player-bar .back-link svg {
+    width: 1.1rem;
+    height: 1.1rem;
 }
 
 .player-bar .download-link:hover:not(.loading) {
@@ -707,14 +664,16 @@ h2 {
         gap: 0.5rem;
     }
 
+    /* The player takes the whole first row; the buttons line up underneath it */
     .player-bar audio {
+        order: -1;
         flex: 1 1 100%;
         min-width: 0;
     }
 
     .phrase-btn,
-    .player-bar a {
+    .player-bar .download-link,
+    .player-bar .back-link {
         flex: 1 1 auto;
-        text-align: center;
     }
 }

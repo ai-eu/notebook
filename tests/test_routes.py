@@ -244,21 +244,6 @@ def test_deleting_a_recording_also_deletes_the_channel_copy(bot_api):
     asyncio.run(scenario())
 
 
-def test_transcript_page_offers_playback_speed_control():
-    async def scenario():
-        async with _client() as client:
-            await client.post("/api/auth/login", data={"key": KEY})
-            await _create_recording(await _signed_in_user_id())
-
-            response = await client.get("/t/rec-1")
-
-            assert response.status_code == 200
-            assert 'id="speed-btn"' in response.text
-            assert 'class="speed-option"' in response.text
-
-    asyncio.run(scenario())
-
-
 def test_recording_tags_and_comment_can_be_updated():
     async def scenario():
         async with _client() as client:
