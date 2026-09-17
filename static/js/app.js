@@ -61,6 +61,15 @@ function statusLabel(status) {
     return labels[status] || status;
 }
 
+const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+
+function formatDateTime(iso) {
+    const d = new Date(iso);
+    if (isNaN(d)) return '';
+    const time = `${d.getHours().toString().padStart(2, '0')}:${d.getMinutes().toString().padStart(2, '0')}`;
+    return `${d.getDate()} ${MONTHS[d.getMonth()]} ${d.getFullYear()} ${time}`;
+}
+
 function uploadFile(file) {
     if (!file) return;
     const formData = new FormData();
@@ -134,19 +143,17 @@ function renderRecordings(recordings) {
     }
     recordingsContainer.innerHTML = recordings.map(r => {
         const duration = r.duration ? ` (${formatDuration(r.duration)})` : '';
-        const error = r.status === 'error' ? `<span class="error"> — ${r.error_message || 'error'}</span>` : '';
+        const title = r.original_filename || 'Untitled';
+        const date = `${formatDateTime(r.created_at)}${duration}`;
+        const heading = r.status === 'done'
+            ? `<a class="recording-link" href="/t/${r.recording_id}"><strong>${title}</strong><span class="recording-date">${date}</span></a>`
+            : `<strong>${title}</strong><span class="recording-date">${date}</span>`;
+        const status = r.status === 'done' ? '' : `<span class="recording-status status-${r.status}">${statusLabel(r.status)}</span>`;
+        const error = r.status === 'error' && r.error_message ? `<span class="error">${r.error_message}</span>` : '';
         return `
             <div class="recording-row" data-id="${r.recording_id}">
-                <div class="recording-info">
-                    <strong>${r.original_filename || 'Untitled'}</strong>
-                    <span class="recording-date">${new Date(r.created_at).toLocaleString()}${duration}</span>
-                    <span class="recording-status status-${r.status}">${statusLabel(r.status)}</span>
-                    ${error}
-                </div>
-                <div class="recording-actions">
-                    ${r.status === 'done' ? `<a href="/t/${r.recording_id}">Transcript</a>` : ''}
-                    <button class="delete-recording" data-id="${r.recording_id}" title="Delete">&times;</button>
-                </div>
+                <div class="recording-info">${heading}${status}${error}</div>
+                <button class="delete-recording" data-id="${r.recording_id}" title="Delete">&times;</button>
             </div>
         `;
     }).join('');
