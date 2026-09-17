@@ -7,6 +7,15 @@
             <button id="prev-phrase" class="phrase-btn" type="button" title="Previous phrase">&larr;</button>
             <audio id="player" controls src="/api/recordings/{{ recording.recording_id }}/audio"></audio>
             <button id="next-phrase" class="phrase-btn" type="button" title="Next phrase">&rarr;</button>
+            <div class="speed-control" id="speed-control">
+                <button id="speed-btn" class="phrase-btn speed-btn" type="button" title="Playback speed" aria-haspopup="true" aria-expanded="false">1&times;</button>
+                <div class="speed-popup" id="speed-popup">
+                    <span class="speed-value" id="speed-value">1&times;</span>
+                    <div class="speed-slider-box">
+                        <input type="range" id="speed-slider" class="speed-slider" min="0.5" max="2" step="0.25" value="1" aria-label="Playback speed">
+                    </div>
+                </div>
+            </div>
             <a href="/api/recordings/{{ recording.recording_id }}/download" class="download-link{% if not txt_ready %} hidden{% endif %}" id="download-link" download>
                 <span class="download-text">Download TXT</span>
                 <span class="loader hidden" id="download-loader"></span>

@@ -6,6 +6,10 @@ const nextPhraseBtn = document.getElementById('next-phrase');
 const downloadLink = document.getElementById('download-link');
 const downloadLoader = document.getElementById('download-loader');
 const audioHint = document.getElementById('audio-hint');
+const speedControl = document.getElementById('speed-control');
+const speedBtn = document.getElementById('speed-btn');
+const speedSlider = document.getElementById('speed-slider');
+const speedValue = document.getElementById('speed-value');
 
 let sentences = [];
 
@@ -219,6 +223,54 @@ if (nextPhraseBtn) {
     nextPhraseBtn.addEventListener('click', () => {
         const idx = getNextPhraseIdx();
         if (idx >= 0) playPhrase(idx);
+    });
+}
+
+const SPEED_STORAGE_KEY = 'playbackRate';
+const MIN_RATE = 0.5;
+const MAX_RATE = 2;
+let currentRate = 1;
+
+function formatRate(rate) {
+    return `${Number(rate.toFixed(2))}\u00d7`;
+}
+
+function applyRate(rate, persist = true) {
+    currentRate = Math.min(MAX_RATE, Math.max(MIN_RATE, rate));
+    player.playbackRate = currentRate;
+    if (speedBtn) speedBtn.textContent = formatRate(currentRate);
+    if (speedValue) speedValue.textContent = formatRate(currentRate);
+    if (speedSlider && Number(speedSlider.value) !== currentRate) speedSlider.value = currentRate;
+    if (persist) localStorage.setItem(SPEED_STORAGE_KEY, String(currentRate));
+    return currentRate;
+}
+
+const savedRate = parseFloat(localStorage.getItem(SPEED_STORAGE_KEY));
+if (!isNaN(savedRate)) applyRate(savedRate, false);
+
+// Some browsers reset the rate when the audio source finishes loading
+player.addEventListener('loadedmetadata', () => {
+    player.playbackRate = currentRate;
+});
+
+if (speedSlider) {
+    speedSlider.addEventListener('input', () => applyRate(parseFloat(speedSlider.value)));
+}
+
+function setSpeedPopup(open) {
+    speedControl.classList.toggle('open', open);
+    speedBtn.setAttribute('aria-expanded', String(open));
+}
+
+if (speedBtn) {
+    speedBtn.addEventListener('click', () => {
+        setSpeedPopup(!speedControl.classList.contains('open'));
+    });
+    document.addEventListener('click', (e) => {
+        if (!speedControl.contains(e.target)) setSpeedPopup(false);
+    });
+    document.addEventListener('keydown', (e) => {
+        if (e.key === 'Escape') setSpeedPopup(false);
     });
 }
 
