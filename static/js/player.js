@@ -8,8 +8,7 @@ const downloadLoader = document.getElementById('download-loader');
 const audioHint = document.getElementById('audio-hint');
 const speedControl = document.getElementById('speed-control');
 const speedBtn = document.getElementById('speed-btn');
-const speedSlider = document.getElementById('speed-slider');
-const speedValue = document.getElementById('speed-value');
+const speedPopup = document.getElementById('speed-popup');
 
 let sentences = [];
 
@@ -227,34 +226,48 @@ if (nextPhraseBtn) {
 }
 
 const SPEED_STORAGE_KEY = 'playbackRate';
-const MIN_RATE = 0.5;
-const MAX_RATE = 2;
+const speedOptions = speedPopup ? [...speedPopup.querySelectorAll('.speed-option')] : [];
+const MIN_RATE = speedOptions.length ? Math.min(...speedOptions.map(btn => parseFloat(btn.dataset.rate))) : 0.75;
+const MAX_RATE = speedOptions.length ? Math.max(...speedOptions.map(btn => parseFloat(btn.dataset.rate))) : 1.5;
 let currentRate = 1;
 
 function formatRate(rate) {
     return `${Number(rate.toFixed(2))}\u00d7`;
 }
 
+function nearestRate(target) {
+    let best = parseFloat(speedOptions[0].dataset.rate);
+    for (const btn of speedOptions) {
+        const rate = parseFloat(btn.dataset.rate);
+        if (Math.abs(rate - target) < Math.abs(best - target)) best = rate;
+    }
+    return best;
+}
+
 function applyRate(rate, persist = true) {
     currentRate = Math.min(MAX_RATE, Math.max(MIN_RATE, rate));
     player.playbackRate = currentRate;
     if (speedBtn) speedBtn.textContent = formatRate(currentRate);
-    if (speedValue) speedValue.textContent = formatRate(currentRate);
-    if (speedSlider && Number(speedSlider.value) !== currentRate) speedSlider.value = currentRate;
+    for (const btn of speedOptions) {
+        btn.classList.toggle('active', parseFloat(btn.dataset.rate) === currentRate);
+    }
     if (persist) localStorage.setItem(SPEED_STORAGE_KEY, String(currentRate));
     return currentRate;
 }
 
 const savedRate = parseFloat(localStorage.getItem(SPEED_STORAGE_KEY));
-if (!isNaN(savedRate)) applyRate(savedRate, false);
+if (!isNaN(savedRate) && speedOptions.length) applyRate(nearestRate(savedRate), false);
 
 // Some browsers reset the rate when the audio source finishes loading
 player.addEventListener('loadedmetadata', () => {
     player.playbackRate = currentRate;
 });
 
-if (speedSlider) {
-    speedSlider.addEventListener('input', () => applyRate(parseFloat(speedSlider.value)));
+for (const btn of speedOptions) {
+    btn.addEventListener('click', () => {
+        applyRate(parseFloat(btn.dataset.rate));
+        setSpeedPopup(false);
+    });
 }
 
 function setSpeedPopup(open) {

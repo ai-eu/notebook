@@ -254,7 +254,7 @@ def test_transcript_page_offers_playback_speed_control():
 
             assert response.status_code == 200
             assert 'id="speed-btn"' in response.text
-            assert 'id="speed-slider"' in response.text
+            assert 'class="speed-option"' in response.text
 
     asyncio.run(scenario())
 
