@@ -33,37 +33,40 @@
     --spinner-head: #ffffff;
 }
 
-/* Dark theme: warm graphite, contrast kept at WCAG AA or better */
+/* Dark theme: deep blue "midnight" palette with a vivid azure accent */
 :root[data-theme="dark"] {
     color-scheme: dark;
 
-    --bg: #121212;
-    --surface: #1c1c1e;
-    --surface-alt: #232325;
-    --surface-hover: #2c2c2e;
-    --surface-active: #3a3a3c;
+    --bg: #0d1320;
+    --surface: #141d2e;
+    --surface-alt: #19233a;
+    --surface-hover: #212e4a;
+    --surface-active: #2a3a5c;
 
-    --border: #38383a;
-    --border-strong: #48484a;
-    --border-dashed: #48484a;
+    --border: #24334e;
+    --border-strong: #33456b;
+    --border-dashed: #33456b;
 
-    --text: #f2f2f7;
-    --muted: #a1a1aa;
+    --text: #edf2fc;
+    --muted: #9db1d4;
 
-    --primary: #5b9dff;
-    --primary-fill: #2f6fd0;
-    --primary-fill-hover: #275aa8;
-    --primary-tint: #1a2b45;
+    --primary: #5aa2ff;
+    --primary-fill: #2e6bdc;
+    --primary-fill-hover: #4480ea;
+    --primary-tint: #17284a;
 
     --danger: #ff7b72;
-    --danger-tint: #3a1d1d;
-    --success: #4ade80;
+    --danger-tint: #3a1d24;
+    --success: #43d68a;
 
-    --highlight-bg: #3a3320;
+    --highlight-bg: #3d3417;
     --highlight-text: #ffd76a;
 
-    --shadow: rgba(0, 0, 0, 0.5);
-    --shadow-up: rgba(0, 0, 0, 0.45);
+    --shadow: rgba(0, 0, 0, 0.55);
+    --shadow-up: rgba(0, 0, 0, 0.5);
+
+    --button-bg: linear-gradient(135deg, #2f6fd0, #7a4fd0);
+    --button-bg-hover: linear-gradient(135deg, #3d80e0, #8a60e0);
 }
 
 * {
@@ -187,7 +190,7 @@ form input[type="text"] {
 button,
 input[type="submit"] {
     padding: 0.75rem 1.25rem;
-    background: var(--primary-fill);
+    background: var(--button-bg, var(--primary-fill));
     color: var(--on-primary);
     border: none;
     border-radius: 6px;
@@ -196,7 +199,7 @@ input[type="submit"] {
 }
 
 button:hover {
-    background: var(--primary-fill-hover);
+    background: var(--button-bg-hover, var(--primary-fill-hover));
 }
 
 .error {
@@ -598,7 +601,7 @@ h2 {
     align-items: center;
     gap: 0.5rem;
     padding: 0.45rem 0.9rem;
-    background: var(--primary-fill);
+    background: var(--button-bg, var(--primary-fill));
     color: var(--on-primary);
     border-radius: 6px;
     font-weight: 500;
@@ -607,7 +610,7 @@ h2 {
 }
 
 .player-bar .download-link:hover:not(.loading) {
-    background: var(--primary-fill-hover);
+    background: var(--button-bg-hover, var(--primary-fill-hover));
 }
 
 .player-bar .download-link.loading {
