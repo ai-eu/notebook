@@ -6,10 +6,6 @@ const nextPhraseBtn = document.getElementById('next-phrase');
 const downloadLink = document.getElementById('download-link');
 const downloadLoader = document.getElementById('download-loader');
 const audioHint = document.getElementById('audio-hint');
-const volumeControl = document.getElementById('volume-control');
-const volumeBtn = document.getElementById('volume-btn');
-const volumeSlider = document.getElementById('volume-slider');
-const volumeValue = document.getElementById('volume-value');
 
 let sentences = [];
 
@@ -223,42 +219,6 @@ if (nextPhraseBtn) {
     nextPhraseBtn.addEventListener('click', () => {
         const idx = getNextPhraseIdx();
         if (idx >= 0) playPhrase(idx);
-    });
-}
-
-const VOLUME_STORAGE_KEY = 'volume';
-
-function applyVolume(value, persist = true) {
-    const level = Math.min(1, Math.max(0, value));
-    player.volume = level;
-    if (volumeBtn) volumeBtn.classList.toggle('muted', level === 0);
-    if (volumeValue) volumeValue.textContent = `${Math.round(level * 100)}%`;
-    if (volumeSlider && Number(volumeSlider.value) !== level) volumeSlider.value = level;
-    if (persist) localStorage.setItem(VOLUME_STORAGE_KEY, String(level));
-    return level;
-}
-
-const savedVolume = parseFloat(localStorage.getItem(VOLUME_STORAGE_KEY));
-if (!isNaN(savedVolume)) applyVolume(savedVolume, false);
-
-if (volumeSlider) {
-    volumeSlider.addEventListener('input', () => applyVolume(parseFloat(volumeSlider.value)));
-}
-
-function setVolumePopup(open) {
-    volumeControl.classList.toggle('open', open);
-    volumeBtn.setAttribute('aria-expanded', String(open));
-}
-
-if (volumeBtn) {
-    volumeBtn.addEventListener('click', () => {
-        setVolumePopup(!volumeControl.classList.contains('open'));
-    });
-    document.addEventListener('click', (e) => {
-        if (!volumeControl.contains(e.target)) setVolumePopup(false);
-    });
-    document.addEventListener('keydown', (e) => {
-        if (e.key === 'Escape') setVolumePopup(false);
     });
 }
 
