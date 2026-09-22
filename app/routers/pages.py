@@ -6,6 +6,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.database import get_db
 from app.auth import get_session_user
 from app.models import Recording
+from app.services.formatter import clean_transcript
 from app.templates import templates
 from app.utils import resolve_recording_path
 
@@ -46,7 +47,7 @@ async def transcript_page(
     transcript_path = resolve_recording_path(recording.folder_path) / "transcript.json"
     formatted_path = resolve_recording_path(recording.folder_path) / "formatted.txt"
     if transcript_path.exists():
-        transcript = json.loads(transcript_path.read_text(encoding="utf-8"))
+        transcript = clean_transcript(json.loads(transcript_path.read_text(encoding="utf-8")))
 
     return templates.TemplateResponse(
         "transcript.html",

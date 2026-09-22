@@ -210,3 +210,60 @@ sudo systemctl restart nginx
 # Replace example.com with your domain
 sudo certbot --nginx -d example.com
 ```
+
+## Updating production
+
+The app runs from `/opt/dictaphone` as the `dictaphone` systemd service (user `www-data`),
+behind nginx. An update is: get the new code onto the server, refresh dependencies if
+`requirements.txt` changed, restart the service.
+
+1. Push the release locally, then pull it on the server:
+
+```bash
+git push origin main          # or whichever branch prod tracks
+
+ssh user@server
+cd /opt/dictaphone
+sudo -u www-data git pull
+```
+
+2. If `requirements.txt` changed, update the venv:
+
+```bash
+sudo -u www-data venv/bin/pip install -r requirements.txt
+```
+
+3. Restart and verify:
+
+```bash
+sudo systemctl restart dictaphone
+systemctl status dictaphone
+journalctl -u dictaphone -f   # watch the log if anything looks off
+```
+
+### Alternative: rsync instead of git
+
+If the server copy is not a git checkout, sync the code from your machine. The excludes
+are critical — they protect the server's `.env`, database, recordings and venv:
+
+```bash
+rsync -avz --delete \
+  --exclude .git/ --exclude .env --exclude venv/ \
+  --exclude 'app.db*' --exclude data/ --exclude cookies.txt \
+  --exclude __pycache__/ --exclude '*.pyc' --exclude .pytest_cache/ --exclude '*.log' \
+  ./ user@server:/tmp/dictaphone/
+
+ssh user@server
+sudo rsync -a --delete /tmp/dictaphone/ /opt/dictaphone/
+sudo chown -R www-data:www-data /opt/dictaphone
+sudo -u www-data venv/bin/pip install -r requirements.txt   # if deps changed
+sudo systemctl restart dictaphone
+```
+
+Notes:
+
+- Never overwrite `/opt/dictaphone/.env`, `app.db` or `data/` — they live only on the
+  server and are gitignored. `data/` holds every recording and transcript.
+- After changing `deploy/dictaphone.service`: `sudo systemctl daemon-reload` then restart.
+- After changing `deploy/nginx.conf`: copy it into `sites-available`, `sudo nginx -t`,
+  `sudo systemctl reload nginx`.

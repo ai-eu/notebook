@@ -66,6 +66,44 @@ _SENTENCE_RE = re.compile(r"([.!?]+[\"'»]?)\s+(?=\S)")
 # Capture group so the sub can put \1\n back.
 _CLAUSE_SPLIT_RE = re.compile(r"([,;:])(?=\s+\S)")
 
+# Whisper sometimes parrots its prompt or credits from its training data on
+# silence and noise ("Transcription by CastingWords", "Subtitles by the
+# Amara.org community"). Strip those phrases from the output.
+_ARTIFACT_RE = re.compile(
+    r"(?:transcri(?:ption|bed)|subtitles?|captioned|subtitling)\s+"
+    r"(?:by|at)\s+(?:the\s+)?"
+    r"(?:casting\s*words|amara\.?org)(?:\s+community)?\.?"
+    r"|casting\s*words\.?"
+    r"|amara\.?org(?:\s+community)?\.?"
+    r"|(?:please\s+)?transcribe\s+with\s+proper\s+punctuation[^\n.]*\.?",
+    re.IGNORECASE,
+)
+
+
+def strip_artifacts(text: str) -> str:
+    """Remove Whisper prompt echoes and training-data credits from a text."""
+    return " ".join(_ARTIFACT_RE.sub(" ", text).split())
+
+
+def clean_transcript(transcript: dict[str, Any]) -> dict[str, Any]:
+    """Drop Whisper artifact segments (prompt echoes, subtitle credits)
+    and rebuild the full text from the surviving segments."""
+    prompt_norm = " ".join((settings.whisper_prompt or "").split()).lower().rstrip(".")
+    result = dict(transcript)
+    raw_segments = transcript.get("segments") or []
+    segments: list[dict[str, Any]] = []
+    for seg in raw_segments:
+        text = strip_artifacts(seg.get("text") or "")
+        if not text or (prompt_norm and text.lower().rstrip(".") == prompt_norm):
+            continue
+        segments.append({**seg, "text": text})
+    if raw_segments:
+        result["segments"] = segments
+        result["text"] = " ".join(s["text"] for s in segments)
+    elif transcript.get("text"):
+        result["text"] = strip_artifacts(transcript["text"])
+    return result
+
 
 
 def _protect_abbreviations(text: str) -> tuple[str, dict[str, str]]:
@@ -338,6 +376,7 @@ async def format_transcript(
 ) -> str:
     """Format the transcript: paragraphs by pauses, sentences by .!?,
     and very long lines are additionally split locally or via Groq."""
+    transcript = clean_transcript(transcript)
     if use_groq and not api_key:
         logging.warning("Smart formatting is enabled, but the user has no Groq API key — smart splitting will not be used.")
 

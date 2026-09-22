@@ -4,6 +4,7 @@ from pathlib import Path
 import httpx
 from app.config import settings
 from app.services.converter import get_duration
+from app.services.formatter import clean_transcript
 from app.services.groq import GROQ_API_BASE, GroqAuthError
 
 
@@ -77,7 +78,7 @@ async def transcribe_file(mp3_path: Path, api_key: str | None, language: str | N
     if response.status_code != 200:
         raise ValueError(f"Groq API error {response.status_code}: {response.text}")
 
-    return response.json()
+    return clean_transcript(response.json())
 
 
 async def transcribe_chunks(chunk_paths: list[Path], api_key: str | None, language: str | None = None) -> dict:

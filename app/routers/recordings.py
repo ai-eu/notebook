@@ -10,7 +10,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.database import get_db
 from app.auth import require_user
 from app.models import User, Recording
-from app.services.formatter import format_transcript
+from app.services.formatter import clean_transcript, format_transcript
 from app.services.groq import resolve_groq_key
 from app.services.storage.archive import delete_remote_copy
 from app.services.storage.cache import drop as drop_cached
@@ -37,7 +37,9 @@ def _recording_to_dict(recording: Recording, include_transcript: bool = False) -
     if include_transcript:
         transcript_path = folder / "transcript.json"
         if transcript_path.exists():
-            data["transcript"] = json.loads(transcript_path.read_text(encoding="utf-8"))
+            data["transcript"] = clean_transcript(
+                json.loads(transcript_path.read_text(encoding="utf-8"))
+            )
         else:
             data["transcript"] = None
     return data
