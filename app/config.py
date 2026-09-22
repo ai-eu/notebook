@@ -30,6 +30,13 @@ class Settings(BaseSettings):
     groq_chat_model: str = "openai/gpt-oss-20b"
     whisper_model: str = "whisper-large-v3"
     whisper_prompt: str = "Please transcribe with proper punctuation, sentence breaks, and paragraph breaks."
+    # --- Noise suppression before transcription (app/services/denoiser.py) ---
+    # off | light (stationary noise: hum, hiss) | deep (adaptive, changing noise)
+    denoise_level: str = "off"
+    # 0.0-1.0: how much of the estimated noise is removed
+    denoise_strength: float = 0.8
+    # Noise threshold sensitivity: higher = more conservative (protects quiet speech)
+    denoise_sensitivity: float = 2.0
     allow_self_registration: bool = True
     validate_groq_key_on_login: bool = True
     groq_validation_timeout: float = 10.0

@@ -20,6 +20,7 @@ from app.services.converter import (
     get_audio_bitrate_kbps,
     calculate_chunk_minutes,
 )
+from app.services.denoiser import denoise_to_mp3
 from app.services.groq import GroqAuthError, resolve_groq_key
 from app.services.formatter import format_transcript
 from app.services.storage import telegram
@@ -86,7 +87,16 @@ async def process_recording(recording_id: str):
 
             passthrough = is_mp3_passthrough(info)
 
-            await convert_to_mp3(original_path, audio_path, passthrough=passthrough)
+            if settings.denoise_level in ("light", "deep") and not settings.mock_transcription:
+                try:
+                    await denoise_to_mp3(original_path, audio_path)
+                    # The audio was decoded and re-encoded, so passthrough no longer applies.
+                    passthrough = False
+                except Exception as exc:
+                    logging.warning("Denoising failed for %s, using the original audio: %s", recording_id, exc)
+                    await convert_to_mp3(original_path, audio_path, passthrough=passthrough)
+            else:
+                await convert_to_mp3(original_path, audio_path, passthrough=passthrough)
             duration = await get_duration(audio_path)
 
             # Remove the original after conversion.
