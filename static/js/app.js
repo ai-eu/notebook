@@ -297,6 +297,20 @@ function uploadTtsFile(file) {
     xhr.send(formData);
 }
 
+const STAGE_LABELS = {
+    denoising: 'Denoising',
+    converting: 'Converting',
+    transcribing: 'Transcribing',
+    formatting: 'Formatting',
+};
+
+function formatElapsedTime(iso) {
+    const started = new Date(iso).getTime();
+    if (isNaN(started)) return '';
+    const secs = Math.max(0, Math.floor((Date.now() - started) / 1000));
+    return formatDuration(secs);
+}
+
 function pollStatus(recordingId) {
     const interval = setInterval(async () => {
         try {
@@ -305,21 +319,79 @@ function pollStatus(recordingId) {
             if (data.status === 'done' || data.status === 'error') {
                 clearInterval(interval);
                 progressArea.classList.add('hidden');
-                loadRecordings();
-            } else {
-                let text = `Status: ${statusLabel(data.status)}`;
-                const progress = data.tts_progress;
-                if (progress && progress.chunks_total > 0) {
-                    const percent = Math.round((progress.chunks_done / progress.chunks_total) * 100);
-                    text = `Synthesizing: ${progress.chunks_done}/${progress.chunks_total} chunks (${percent}%)`;
-                    progressFill.style.width = percent + '%';
+                progressFill.classList.remove('indeterminate');
+                if (data.status === 'done') {
+                    showToast('Transcription ready');
+                    playChime();
+                } else {
+                    showToast(data.error_message || 'Processing failed', true);
                 }
-                progressText.textContent = text;
+                loadRecordings();
+                return;
+            }
+            let text = `Status: ${statusLabel(data.status)}`;
+            let percent = null;
+            const ttsProgress = data.tts_progress;
+            if (ttsProgress && ttsProgress.chunks_total > 0) {
+                percent = Math.round((ttsProgress.chunks_done / ttsProgress.chunks_total) * 100);
+                text = `Synthesizing: ${ttsProgress.chunks_done}/${ttsProgress.chunks_total} chunks (${percent}%)`;
+            } else if (data.progress && data.progress.stage) {
+                const stage = data.progress.stage;
+                text = STAGE_LABELS[stage] || 'Processing';
+                if (stage === 'transcribing' && data.progress.chunks_total > 0) {
+                    percent = Math.round((data.progress.chunks_done / data.progress.chunks_total) * 100);
+                    text += `: ${data.progress.chunks_done}/${data.progress.chunks_total} chunks (${percent}%)`;
+                } else {
+                    const elapsed = formatElapsedTime(data.progress.started_at);
+                    if (elapsed) text += `... ${elapsed}`;
+                }
+            }
+            progressText.textContent = text;
+            if (percent !== null) {
+                progressFill.classList.remove('indeterminate');
+                progressFill.style.width = percent + '%';
+            } else {
+                // No percent for this stage: keep the bar moving so the app looks alive.
+                progressFill.classList.add('indeterminate');
             }
         } catch (e) {
             clearInterval(interval);
+            progressFill.classList.remove('indeterminate');
         }
     }, 2000);
+}
+
+function showToast(message, isError = false) {
+    if (!document.body) return;
+    const toast = document.createElement('div');
+    toast.className = 'toast' + (isError ? ' toast-error' : '');
+    toast.setAttribute('role', 'status');
+    toast.textContent = message;
+    document.body.appendChild(toast);
+    requestAnimationFrame(() => toast.classList.add('show'));
+    setTimeout(() => {
+        toast.classList.remove('show');
+        setTimeout(() => toast.remove(), 400);
+    }, 6000);
+}
+
+function playChime() {
+    try {
+        const ctx = new (window.AudioContext || window.webkitAudioContext)();
+        [660, 880].forEach((freq, i) => {
+            const osc = ctx.createOscillator();
+            const gain = ctx.createGain();
+            const at = ctx.currentTime + i * 0.18;
+            osc.type = 'sine';
+            osc.frequency.value = freq;
+            gain.gain.setValueAtTime(0.06, at);
+            gain.gain.exponentialRampToValueAtTime(0.001, at + 0.35);
+            osc.connect(gain);
+            gain.connect(ctx.destination);
+            osc.start(at);
+            osc.stop(at + 0.4);
+        });
+    } catch (e) { /* sound is a nice-to-have, never a failure */ }
 }
 
 function renderCards(recordings) {

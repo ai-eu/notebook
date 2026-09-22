@@ -716,3 +716,44 @@ h2 {
         flex: 1 1 auto;
     }
 }
+
+/* --- Processing progress: indeterminate movement + toast notifications --- */
+
+.progress-fill.indeterminate {
+    width: 35%;
+    animation: progress-slide 1.6s ease-in-out infinite;
+}
+
+@keyframes progress-slide {
+    0% { margin-left: -35%; }
+    100% { margin-left: 100%; }
+}
+
+.toast {
+    position: fixed;
+    left: 50%;
+    bottom: 2rem;
+    transform: translate(-50%, 1rem);
+    max-width: 90vw;
+    padding: 0.75rem 1.25rem;
+    border-radius: 0.5rem;
+    background: var(--surface);
+    color: var(--text);
+    border: 1px solid var(--border);
+    box-shadow: 0 4px 16px var(--shadow-up);
+    font-size: 0.95rem;
+    opacity: 0;
+    transition: opacity 0.3s, transform 0.3s;
+    z-index: 200;
+}
+
+.toast.show {
+    opacity: 1;
+    transform: translate(-50%, 0);
+}
+
+.toast-error {
+    background: var(--danger-tint);
+    color: var(--danger);
+    border-color: var(--danger);
+}

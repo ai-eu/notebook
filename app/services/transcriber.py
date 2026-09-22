@@ -81,15 +81,22 @@ async def transcribe_file(mp3_path: Path, api_key: str | None, language: str | N
     return clean_transcript(response.json())
 
 
-async def transcribe_chunks(chunk_paths: list[Path], api_key: str | None, language: str | None = None) -> dict:
+async def transcribe_chunks(
+    chunk_paths: list[Path],
+    api_key: str | None,
+    language: str | None = None,
+    progress_cb=None,
+) -> dict:
     all_segments = []
     full_texts = []
     detected_language = None
     duration = 0.0
     offset = 0.0
 
-    for chunk_path in chunk_paths:
+    for index, chunk_path in enumerate(chunk_paths):
         result = await transcribe_file(chunk_path, api_key, language=language)
+        if progress_cb:
+            progress_cb(index + 1, len(chunk_paths))
         chunk_duration = result.get("duration", 0.0)
         for segment in result.get("segments", []):
             shifted = dict(segment)

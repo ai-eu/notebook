@@ -56,6 +56,28 @@ async def _archive_to_telegram(recording_id: str) -> None:
         logging.warning("Archiving %s failed: %s", recording_id, exc)
 
 
+# In-memory progress of running transcription jobs, mirroring tts_progress:
+# recording_id -> {"stage": denoising|converting|transcribing|formatting,
+#                  "started_at": iso timestamp, "chunks_done", "chunks_total"}
+processing_progress: dict[str, dict] = {}
+
+
+def set_processing_stage(recording_id: str, stage: str, **extra) -> None:
+    processing_progress[recording_id] = {
+        "stage": stage,
+        "started_at": datetime.now(timezone.utc).isoformat(),
+        **extra,
+    }
+
+
+def get_processing_progress(recording_id: str) -> dict:
+    return dict(processing_progress.get(recording_id, {}))
+
+
+def _clear_processing_progress(recording_id: str) -> None:
+    processing_progress.pop(recording_id, None)
+
+
 async def process_recording(recording_id: str):
     async with AsyncSessionLocal() as db:
         result = await db.execute(select(Recording).where(Recording.recording_id == recording_id))
@@ -88,14 +110,17 @@ async def process_recording(recording_id: str):
             passthrough = is_mp3_passthrough(info)
 
             if settings.denoise_level in ("light", "deep") and not settings.mock_transcription:
+                set_processing_stage(recording_id, "denoising")
                 try:
                     await denoise_to_mp3(original_path, audio_path)
                     # The audio was decoded and re-encoded, so passthrough no longer applies.
                     passthrough = False
                 except Exception as exc:
                     logging.warning("Denoising failed for %s, using the original audio: %s", recording_id, exc)
+                    set_processing_stage(recording_id, "converting")
                     await convert_to_mp3(original_path, audio_path, passthrough=passthrough)
             else:
+                set_processing_stage(recording_id, "converting")
                 await convert_to_mp3(original_path, audio_path, passthrough=passthrough)
             duration = await get_duration(audio_path)
 
@@ -124,7 +149,13 @@ async def process_recording(recording_id: str):
             if len(chunk_paths) == 1:
                 transcript = await transcribe_file(audio_path, api_key)
             else:
-                transcript = await transcribe_chunks(chunk_paths, api_key)
+                def report_chunk_progress(done: int, total: int) -> None:
+                    set_processing_stage(recording_id, "transcribing", chunks_done=done, chunks_total=total)
+
+                set_processing_stage(recording_id, "transcribing", chunks_done=0, chunks_total=len(chunk_paths))
+                transcript = await transcribe_chunks(chunk_paths, api_key, progress_cb=report_chunk_progress)
+
+            set_processing_stage(recording_id, "formatting")
 
             transcript_path.write_text(json.dumps(transcript, ensure_ascii=False, indent=2), encoding="utf-8")
             formatted = await format_transcript(
@@ -157,6 +188,8 @@ async def process_recording(recording_id: str):
             recording.updated_at = datetime.now(timezone.utc)
             await db.commit()
             # Keep files for diagnostics.
+
+        _clear_processing_progress(recording_id)
 
         if recording.status == "done" and telegram.is_configured():
             await _archive_to_telegram(recording_id)

@@ -12,6 +12,7 @@ from app.auth import require_user
 from app.models import User, Recording
 from app.services.formatter import clean_transcript, format_transcript
 from app.services.groq import resolve_groq_key
+from app.services.processing import get_processing_progress
 from app.services.tts import get_tts_progress
 from app.services.storage.archive import delete_remote_copy
 from app.services.storage.cache import drop as drop_cached
@@ -103,6 +104,8 @@ async def get_recording_status(
         result["tts_model"] = recording.tts_model
         result["tts_voice"] = recording.tts_voice
         result["tts_progress"] = get_tts_progress(recording_id)
+    else:
+        result["progress"] = get_processing_progress(recording_id)
     return result
 
 
