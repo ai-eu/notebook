@@ -5,6 +5,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from app.database import get_db
 from app.auth import get_session_user
+from app.config import settings
 from app.models import Recording
 from app.services.formatter import clean_transcript
 from app.templates import templates
@@ -20,7 +21,7 @@ async def index(request: Request, db: AsyncSession = Depends(get_db)):
         return RedirectResponse("/api/auth/login", status_code=303)
     return templates.TemplateResponse(
         "index.html",
-        {"request": request, "user": user},
+        {"request": request, "user": user, "tts_enabled": settings.tts_enabled},
     )
 
 

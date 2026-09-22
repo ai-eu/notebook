@@ -12,6 +12,7 @@ from app.auth import require_user
 from app.models import User, Recording
 from app.services.formatter import clean_transcript, format_transcript
 from app.services.groq import resolve_groq_key
+from app.services.tts import get_tts_progress
 from app.services.storage.archive import delete_remote_copy
 from app.services.storage.cache import drop as drop_cached
 from app.services.storage.cache import ensure_cached
@@ -90,13 +91,19 @@ async def get_recording_status(
 ):
     recording = await _get_user_recording(recording_id, user, db)
     formatted_path = resolve_recording_path(recording.folder_path) / "formatted.txt"
-    return {
+    result = {
         "recording_id": recording.recording_id,
         "status": recording.status,
         "duration": recording.duration,
         "error_message": recording.error_message,
         "txt_ready": formatted_path.exists(),
     }
+    if recording.kind == "tts":
+        result["kind"] = "tts"
+        result["tts_model"] = recording.tts_model
+        result["tts_voice"] = recording.tts_voice
+        result["tts_progress"] = get_tts_progress(recording_id)
+    return result
 
 
 class TagsUpdate(BaseModel):

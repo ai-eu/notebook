@@ -4,6 +4,7 @@ import logging
 import shutil
 import traceback
 from datetime import datetime, timezone
+from pathlib import Path
 from sqlalchemy import select
 from app.database import AsyncSessionLocal
 from app.models import Recording, User
@@ -24,6 +25,20 @@ from app.services.formatter import format_transcript
 from app.services.storage import telegram
 from app.services.storage.archive import archive_recording
 from app.services.transcriber import transcribe_file, transcribe_chunks
+from app.services.tts import (
+    TTSAuthError,
+    chunk_text,
+    concat_chunks,
+    get_provider,
+    get_tts_progress,
+    clean_text_for_tts,
+    normalize_text,
+    safe_unlink,
+    set_tts_progress,
+    split_voice,
+    synthesize_chunk,
+    tts_progress,
+)
 from app.utils import resolve_recording_path, safe_delete
 
 
@@ -135,3 +150,122 @@ async def process_recording(recording_id: str):
 
         if recording.status == "done" and telegram.is_configured():
             await _archive_to_telegram(recording_id)
+
+
+async def process_tts(recording_id: str, voice: str | None = None):
+    """Turn the uploaded text (original.tmp) into one spoken MP3.
+
+    The result reuses the transcription machinery: audio.mp3, a synthetic
+    transcript.json (one segment per chunk, cumulative timings) and formatted.txt,
+    so cards, player highlighting and the Telegram archive work unchanged.
+    """
+    async with AsyncSessionLocal() as db:
+        result = await db.execute(select(Recording).where(Recording.recording_id == recording_id))
+        recording = result.scalar_one_or_none()
+        if not recording:
+            return
+
+        provider_name, voice_name = split_voice(voice or settings.tts_voice)
+        recording.tts_model = provider_name
+        recording.tts_voice = voice_name
+        recording.status = "processing"
+        recording.updated_at = datetime.now(timezone.utc)
+        await db.commit()
+
+        try:
+            provider = get_provider(provider_name)
+            folder = resolve_recording_path(recording.folder_path)
+            original_path = folder / "original.tmp"
+            audio_path = folder / "audio.mp3"
+            transcript_path = folder / "transcript.json"
+            formatted_path = folder / "formatted.txt"
+
+            if not original_path.exists():
+                raise ValueError("Text file not found")
+
+            raw = original_path.read_text(encoding="utf-8", errors="replace")
+            text = normalize_text(raw)
+            text = clean_text_for_tts(text)
+            if not text.strip():
+                raise ValueError("Empty text file")
+            if len(text) > settings.tts_max_chars:
+                raise ValueError(
+                    f"Text too long: {len(text)} chars > {settings.tts_max_chars}"
+                )
+
+            chunks = chunk_text(text, settings.tts_chunk_chars)
+            chunks_dir = folder / "chunks"
+            chunks_dir.mkdir(parents=True, exist_ok=True)
+
+            set_tts_progress(recording_id, 0, len(chunks))
+            semaphore = asyncio.Semaphore(max(1, settings.tts_concurrency))
+
+            async def synth(index: int) -> Path:
+                async with semaphore:
+                    out_path = chunks_dir / f"tts-{index:03d}.{provider.audio_format}"
+                    await synthesize_chunk(provider, chunks[index], voice_name, out_path)
+                    done = get_tts_progress(recording_id).get("chunks_done", 0)
+                    set_tts_progress(recording_id, done + 1, len(chunks))
+                    return out_path
+
+            chunk_paths = list(await asyncio.gather(*(synth(i) for i in range(len(chunks)))))
+
+            await concat_chunks(chunk_paths, audio_path)
+            durations = [await get_duration(path) for path in chunk_paths]
+            total_duration = sum(durations)
+
+            segments = []
+            offset = 0.0
+            for index, (chunk, duration) in enumerate(zip(chunks, durations)):
+                segments.append(
+                    {
+                        "id": index,
+                        "start": round(offset, 3),
+                        "end": round(offset + duration, 3),
+                        "text": chunk,
+                    }
+                )
+                offset += duration
+
+            transcript_path.write_text(
+                json.dumps(
+                    {
+                        "text": text,
+                        "language": None,
+                        "duration": total_duration,
+                        "segments": segments,
+                    },
+                    ensure_ascii=False,
+                    indent=2,
+                ),
+                encoding="utf-8",
+            )
+            formatted_path.write_text(text, encoding="utf-8")
+
+            safe_delete(original_path)
+            safe_delete(chunks_dir)
+
+            recording.status = "done"
+            recording.duration = total_duration
+            recording.updated_at = datetime.now(timezone.utc)
+            await db.commit()
+
+        except TTSAuthError as exc:
+            logging.warning("TTS provider rejected the key for %s: %s", recording_id, exc)
+            recording.status = "error"
+            recording.error_message = "TTS provider rejected the API key. Check the server configuration."
+            recording.updated_at = datetime.now(timezone.utc)
+            await db.commit()
+            # Keep files for diagnostics.
+        except Exception as exc:
+            logging.exception("process_tts failed for %s", recording_id)
+            recording.status = "error"
+            recording.error_message = f"{type(exc).__name__}: {exc}"
+            recording.updated_at = datetime.now(timezone.utc)
+            await db.commit()
+            # Keep files for diagnostics.
+
+        if recording.status == "done" and telegram.is_configured():
+            await _archive_to_telegram(recording_id)
+
+        tts_progress.pop(recording_id, None)

@@ -46,6 +46,11 @@ class Recording(Base):
     duration = Column(Float, nullable=True)
     status = Column(String(20), default="pending")  # pending/processing/done/error
     error_message = Column(Text, nullable=True)
+    # transcription (default) or tts — both share the card/player/archive machinery
+    kind = Column(String(20), default="transcription", nullable=False)
+    # Which model/voice produced the audio for kind="tts" (badge + regeneration)
+    tts_model = Column(String(100), nullable=True)
+    tts_voice = Column(String(100), nullable=True)
     # local — only on this server, partial — some parts are in the channel, tg — fully archived
     storage_state = Column(String(20), default="local")
     archived_at = Column(DateTime, nullable=True)

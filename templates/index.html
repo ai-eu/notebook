@@ -17,6 +17,22 @@
     {% if not user.key_valid %}
     <p class="error">Groq rejected your API key. Log out and sign in with a valid one to keep transcribing.</p>
     {% endif %}
+    {% if tts_enabled %}
+    <div id="mode-tabs" class="mode-tabs">
+        <button type="button" id="tab-transcribe" class="mode-tab active" data-mode="transcribe">Transcribe</button>
+        <button type="button" id="tab-tts" class="mode-tab" data-mode="tts">Text to Speech</button>
+    </div>
+    <div id="tts-panel" class="hidden">
+        <div id="tts-dropzone" class="dropzone tts-dropzone">
+            <p>Drag and drop a .txt or .md file here or click to select</p>
+            <input type="file" id="tts-fileinput" accept=".txt,.md,text/plain,text/markdown" style="display:none">
+        </div>
+        <div class="voice-row">
+            <label for="voice-select" class="voice-label">Voice:</label>
+            <select id="voice-select" class="voice-select" aria-label="TTS voice"></select>
+        </div>
+    </div>
+    {% endif %}
     <div id="dropzone" class="dropzone">
         <p>Drag and drop a file here or click to select</p>
         <input type="file" id="fileinput" accept="audio/*,video/*" style="display:none">

@@ -38,6 +38,29 @@ class Settings(BaseSettings):
     # Only enable behind a reverse proxy that overwrites X-Forwarded-For / X-Real-IP,
     # otherwise clients can spoof their address and dodge the login rate limit.
     trust_proxy_headers: bool = False
+    # --- Text-to-speech (docs/TTS_SPEC.md) ---
+    tts_enabled: bool = True
+    # Active provider: edge (free, default) | openai | grok (paid ones in phase 4)
+    tts_provider: str = "edge"
+    # Default voice in "<provider>:<voice>" form
+    tts_voice: str = "edge:en-US-GuyNeural"
+    tts_chunk_chars: int = 1000
+    tts_concurrency: int = 3
+    tts_max_chars: int = 200000
+    tts_max_file_mb: int = 2
+    tts_max_retries: int = 3
+    tts_request_interval: float = 0.0
+    # Local testing without network: generates sine tones instead of real TTS
+    mock_tts: bool = False
+    # Server-side keys for the paid providers (used in phase 4)
+    openai_api_key: str | None = None
+    xai_api_key: str | None = None
+    # Reserve providers (used only when TTS_PROVIDER points at them)
+    azure_speech_key: str | None = None
+    azure_speech_region: str = "westeurope"
+    google_tts_api_key: str | None = None
+    # OpenAI speech model: gpt-4o-mini-tts is cheaper than the base tts-1
+    tts_openai_model: str = "gpt-4o-mini-tts"
 
     # Telegram archive: finished recordings are copied into a private channel, so the
     # server only keeps a local copy (see AUDIO_RETENTION_DAYS in a later phase).

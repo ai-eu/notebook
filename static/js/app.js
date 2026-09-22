@@ -5,46 +5,88 @@ const progressFill = document.getElementById('progress-fill');
 const progressText = document.getElementById('progress-text');
 const recordingsContainer = document.getElementById('recordings');
 const tagsFilterContainer = document.getElementById('tags-filter');
+const modeTabs = document.getElementById('mode-tabs');
+const ttsPanel = document.getElementById('tts-panel');
+const ttsDropzone = document.getElementById('tts-dropzone');
+const ttsFileInput = document.getElementById('tts-fileinput');
+const voiceSelect = document.getElementById('voice-select');
 
 const ACTIVE_TAG_KEY = 'activeTag';
 let activeTag = localStorage.getItem(ACTIVE_TAG_KEY) || '';
 let currentRecordings = [];
 
-if (dropzone) {
-    ['dragenter', 'dragover', 'dragleave', 'drop'].forEach(eventName => {
-        dropzone.addEventListener(eventName, preventDefaults, false);
-    });
-
-    function preventDefaults(e) {
-        e.preventDefault();
-        e.stopPropagation();
-    }
-
-    ['dragenter', 'dragover'].forEach(eventName => {
-        dropzone.addEventListener(eventName, () => dropzone.classList.add('dragover'), false);
-    });
-
-    ['dragleave', 'drop'].forEach(eventName => {
-        dropzone.addEventListener(eventName, () => dropzone.classList.remove('dragover'), false);
-    });
-
-    dropzone.addEventListener('drop', handleDrop, false);
-    dropzone.addEventListener('click', () => fileInput && fileInput.click(), false);
+function preventDefaults(e) {
+    e.preventDefault();
+    e.stopPropagation();
 }
 
-if (fileInput) {
-    fileInput.addEventListener('change', (e) => {
+function highlight(zone, on) {
+    zone.classList.toggle('dragover', on);
+}
+
+function setupDropzone(zone, fileInputEl, onFile) {
+    if (!zone) return;
+    ['dragenter', 'dragover', 'dragleave', 'drop'].forEach(eventName => {
+        zone.addEventListener(eventName, preventDefaults, false);
+    });
+    ['dragenter', 'dragover'].forEach(eventName => {
+        zone.addEventListener(eventName, () => highlight(zone, true), false);
+    });
+    ['dragleave', 'drop'].forEach(eventName => {
+        zone.addEventListener(eventName, () => highlight(zone, false), false);
+    });
+    zone.addEventListener('drop', (e) => {
+        const files = e.dataTransfer.files;
+        if (files.length) onFile(files[0]);
+    }, false);
+    zone.addEventListener('click', () => fileInputEl && fileInputEl.click(), false);
+    fileInputEl.addEventListener('change', (e) => {
         if (e.target.files.length) {
-            uploadFile(e.target.files[0]);
+            onFile(e.target.files[0]);
+            e.target.value = '';
         }
     });
 }
 
-function handleDrop(e) {
-    const files = e.dataTransfer.files;
-    if (files.length) {
-        uploadFile(files[0]);
-    }
+setupDropzone(dropzone, fileInput, uploadFile);
+setupDropzone(ttsDropzone, ttsFileInput, uploadTtsFile);
+
+// --- Mode tabs (Transcribe / Text to Speech) ---
+
+let voicesLoaded = false;
+
+if (modeTabs) {
+    modeTabs.addEventListener('click', (e) => {
+        const tab = e.target.closest('.mode-tab');
+        if (!tab) return;
+        const mode = tab.dataset.mode;
+        modeTabs.querySelectorAll('.mode-tab').forEach(t => t.classList.toggle('active', t === tab));
+        const isTts = mode === 'tts';
+        ttsPanel.classList.toggle('hidden', !isTts);
+        dropzone.classList.toggle('hidden', isTts);
+        if (isTts && !voicesLoaded) loadVoices();
+    });
+}
+
+async function loadVoices() {
+    try {
+        const res = await fetch('/api/tts/voices');
+        if (!res.ok) return;
+        const data = await res.json();
+        const groups = {};
+        for (const voice of data.voices) {
+            (groups[voice.lang] = groups[voice.lang] || []).push(voice);
+        }
+        const langNames = { en: 'English', 'pt-PT': 'Português', es: 'Español', uk: 'Українська' };
+        voiceSelect.innerHTML = Object.keys(groups).map(lang =>
+            `<optgroup label="${escapeHtml(langNames[lang] || lang)}">` +
+            groups[lang].map(v =>
+                `<option value="${escapeHtml(v.id)}"${v.default ? ' selected' : ''}>${escapeHtml(v.name)}</option>`
+            ).join('') +
+            '</optgroup>'
+        ).join('');
+        voicesLoaded = true;
+    } catch (e) { /* the selector just stays empty */ }
 }
 
 function formatDuration(seconds) {
@@ -174,6 +216,53 @@ function uploadFile(file) {
     xhr.send(formData);
 }
 
+function uploadTtsFile(file) {
+    if (!file) return;
+    const formData = new FormData();
+    formData.append('file', file);
+    if (voiceSelect && voiceSelect.value) formData.append('voice', voiceSelect.value);
+
+    progressArea.classList.remove('hidden');
+    progressFill.style.width = '0%';
+    progressText.textContent = 'Uploading text...';
+
+    const xhr = new XMLHttpRequest();
+    xhr.open('POST', '/api/tts/upload', true);
+
+    xhr.upload.addEventListener('progress', (e) => {
+        if (e.lengthComputable) {
+            const percent = Math.round((e.loaded / e.total) * 100);
+            progressFill.style.width = percent + '%';
+            progressText.textContent = `Uploading: ${percent}%`;
+        }
+    });
+
+    xhr.addEventListener('load', () => {
+        if (xhr.status === 200) {
+            const data = JSON.parse(xhr.responseText);
+            progressText.textContent = 'Upload complete, synthesizing speech...';
+            pollStatus(data.recording_id);
+            loadRecordings();
+        } else {
+            let detail = 'Upload error';
+            try {
+                const resp = JSON.parse(xhr.responseText);
+                detail = resp.detail || detail;
+            } catch (e) {}
+            progressText.textContent = detail;
+            progressFill.style.width = '100%';
+            progressFill.classList.add('error');
+        }
+    });
+
+    xhr.addEventListener('error', () => {
+        progressText.textContent = 'Network error';
+        progressFill.classList.add('error');
+    });
+
+    xhr.send(formData);
+}
+
 function pollStatus(recordingId) {
     const interval = setInterval(async () => {
         try {
@@ -184,7 +273,14 @@ function pollStatus(recordingId) {
                 progressArea.classList.add('hidden');
                 loadRecordings();
             } else {
-                progressText.textContent = `Status: ${statusLabel(data.status)}`;
+                let text = `Status: ${statusLabel(data.status)}`;
+                const progress = data.tts_progress;
+                if (progress && progress.chunks_total > 0) {
+                    const percent = Math.round((progress.chunks_done / progress.chunks_total) * 100);
+                    text = `Synthesizing: ${progress.chunks_done}/${progress.chunks_total} chunks (${percent}%)`;
+                    progressFill.style.width = percent + '%';
+                }
+                progressText.textContent = text;
             }
         } catch (e) {
             clearInterval(interval);

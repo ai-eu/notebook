@@ -1,0 +1,29 @@
+........................................................................ [ 53%]
+...............................................................          [100%]
+============================== warnings summary ===============================
+app\main.py:23
+  D:\apps\notebook\app\main.py:23: DeprecationWarning: 
+          on_event is deprecated, use lifespan event handlers instead.
+  
+          Read more about it in the
+          [FastAPI docs for Lifespan Events](https://fastapi.tiangolo.com/advanced/events/).
+          
+    @app.on_event("startup")
+
+venv\Lib\site-packages\fastapi\applications.py:4574
+  D:\apps\notebook\venv\Lib\site-packages\fastapi\applications.py:4574: DeprecationWarning: 
+          on_event is deprecated, use lifespan event handlers instead.
+  
+          Read more about it in the
+          [FastAPI docs for Lifespan Events](https://fastapi.tiangolo.com/advanced/events/).
+          
+    return self.router.on_event(event_type)
+
+tests/test_routes.py: 11 warnings
+tests/test_tts_routes.py: 2 warnings
+  D:\apps\notebook\venv\Lib\site-packages\starlette\templating.py:162: DeprecationWarning: The `name` is not the first parameter anymore. The first parameter should be the `Request` instance.
+  Replace `TemplateResponse(name, {"request": request})` by `TemplateResponse(request, name)`.
+    warnings.warn(
+
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+135 passed, 15 warnings in 12.51s
