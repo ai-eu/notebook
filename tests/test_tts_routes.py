@@ -200,28 +200,30 @@ def test_status_reports_tts_fields(monkeypatch):
     asyncio.run(scenario())
 
 
-def test_index_shows_tts_tabs_when_enabled():
+def test_index_shows_tts_ui_when_enabled():
     async def scenario():
         async with _client() as client:
             await client.post("/api/auth/login", data={"key": KEY})
             page = await client.get("/")
-            assert 'id="mode-tabs"' in page.text
-            assert 'id="tts-dropzone"' in page.text
+            assert 'id="voice-row"' in page.text
             assert 'id="voice-select"' in page.text
-            assert "Text to Speech" in page.text
+            assert 'id="voice-hint"' in page.text
+            # one unified dropzone whose accept includes text formats
+            assert ".txt,.md" in page.text
 
     asyncio.run(scenario())
 
 
-def test_index_hides_tts_tabs_when_disabled(monkeypatch):
+def test_index_hides_tts_ui_when_disabled(monkeypatch):
     monkeypatch.setattr(settings, "tts_enabled", False)
 
     async def scenario():
         async with _client() as client:
             await client.post("/api/auth/login", data={"key": KEY})
             page = await client.get("/")
-            assert 'id="mode-tabs"' not in page.text
-            assert 'id="tts-dropzone"' not in page.text
+            assert 'id="voice-row"' not in page.text
+            assert 'id="voice-select"' not in page.text
+            assert ".txt,.md" not in page.text
 
     asyncio.run(scenario())
 

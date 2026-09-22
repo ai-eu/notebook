@@ -5,15 +5,15 @@ const progressFill = document.getElementById('progress-fill');
 const progressText = document.getElementById('progress-text');
 const recordingsContainer = document.getElementById('recordings');
 const tagsFilterContainer = document.getElementById('tags-filter');
-const modeTabs = document.getElementById('mode-tabs');
-const ttsPanel = document.getElementById('tts-panel');
-const ttsDropzone = document.getElementById('tts-dropzone');
-const ttsFileInput = document.getElementById('tts-fileinput');
+const voiceRow = document.getElementById('voice-row');
 const voiceSelect = document.getElementById('voice-select');
+const voiceHint = document.getElementById('voice-hint');
 
 const ACTIVE_TAG_KEY = 'activeTag';
 let activeTag = localStorage.getItem(ACTIVE_TAG_KEY) || '';
 let currentRecordings = [];
+// A text file waiting for the user to pick a voice before it is uploaded.
+let pendingTtsFile = null;
 
 function preventDefaults(e) {
     e.preventDefault();
@@ -48,25 +48,47 @@ function setupDropzone(zone, fileInputEl, onFile) {
     });
 }
 
-setupDropzone(dropzone, fileInput, uploadFile);
-setupDropzone(ttsDropzone, ttsFileInput, uploadTtsFile);
+setupDropzone(dropzone, fileInput, handleFile);
 
-// --- Mode tabs (Transcribe / Text to Speech) ---
+// --- TTS mode: detected from the uploaded file's format (.txt / .md) ---
 
 let voicesLoaded = false;
 
-if (modeTabs) {
-    modeTabs.addEventListener('click', (e) => {
-        const tab = e.target.closest('.mode-tab');
-        if (!tab) return;
-        const mode = tab.dataset.mode;
-        modeTabs.querySelectorAll('.mode-tab').forEach(t => t.classList.toggle('active', t === tab));
-        const isTts = mode === 'tts';
-        ttsPanel.classList.toggle('hidden', !isTts);
-        dropzone.classList.toggle('hidden', isTts);
-        if (isTts && !voicesLoaded) loadVoices();
-    });
+function isTextFile(file) {
+    const textTypes = ['text/plain', 'text/markdown'];
+    if (textTypes.includes(file.type)) return true;
+    return /\.(txt|md)$/i.test(file.name);
 }
+
+function handleFile(file) {
+    if (!file) return;
+    if (isTextFile(file)) {
+        if (!voiceSelect) {
+            // TTS is disabled server-side; no voice selector exists in the DOM.
+            progressArea.classList.remove('hidden');
+            progressFill.classList.add('error');
+            progressFill.style.width = '100%';
+            progressText.textContent = 'Text files require text-to-speech, which is disabled.';
+            return;
+        }
+        pendingTtsFile = file;
+        voiceRow.classList.remove('hidden');
+        voiceHint.classList.remove('hidden');
+        voiceSelect.classList.add('voice-required');
+        loadVoices();
+        return;
+    }
+    uploadFile(file);
+}
+
+voiceSelect?.addEventListener('change', () => {
+    if (!pendingTtsFile) return;
+    voiceHint.classList.add('hidden');
+    voiceSelect.classList.remove('voice-required');
+    const file = pendingTtsFile;
+    pendingTtsFile = null;
+    uploadTtsFile(file);
+});
 
 async function loadVoices() {
     try {
@@ -78,13 +100,16 @@ async function loadVoices() {
             (groups[voice.lang] = groups[voice.lang] || []).push(voice);
         }
         const langNames = { en: 'English', 'pt-PT': 'Português', es: 'Español', uk: 'Українська' };
-        voiceSelect.innerHTML = Object.keys(groups).map(lang =>
-            `<optgroup label="${escapeHtml(langNames[lang] || lang)}">` +
-            groups[lang].map(v =>
-                `<option value="${escapeHtml(v.id)}"${v.default ? ' selected' : ''}>${escapeHtml(v.name)}</option>`
-            ).join('') +
-            '</optgroup>'
-        ).join('');
+        // No voice is preselected: the upload starts only after the user picks one.
+        voiceSelect.innerHTML =
+            '<option value="" disabled selected>Select a voice…</option>' +
+            Object.keys(groups).map(lang =>
+                `<optgroup label="${escapeHtml(langNames[lang] || lang)}">` +
+                groups[lang].map(v =>
+                    `<option value="${escapeHtml(v.id)}">${escapeHtml(v.name)}</option>`
+                ).join('') +
+                '</optgroup>'
+            ).join('');
         voicesLoaded = true;
     } catch (e) { /* the selector just stays empty */ }
 }
@@ -218,6 +243,15 @@ function uploadFile(file) {
 
 function uploadTtsFile(file) {
     if (!file) return;
+    if (!voiceSelect || !voiceSelect.value) {
+        // No voice chosen yet: prompt and wait instead of uploading.
+        pendingTtsFile = file;
+        voiceRow?.classList.remove('hidden');
+        voiceHint?.classList.remove('hidden');
+        voiceSelect?.classList.add('voice-required');
+        if (!voicesLoaded) loadVoices();
+        return;
+    }
     const formData = new FormData();
     formData.append('file', file);
     if (voiceSelect && voiceSelect.value) formData.append('voice', voiceSelect.value);
