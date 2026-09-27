@@ -77,8 +77,6 @@ const sessionsBtn = document.getElementById('sessions-btn');
 const sessionsModal = document.getElementById('sessions-modal');
 if (sessionsBtn && sessionsModal) {
     const sessionsList = document.getElementById('sessions-list');
-    const closeBtn = document.getElementById('sessions-close-btn');
-    const revokeCodeBtn = document.getElementById('revoke-code-btn');
 
     function fmtDate(iso) {
         // Short 24-hour form: "Sep 27, 13:28" — independent of the locale's 12/24h preference.
@@ -132,18 +130,8 @@ if (sessionsBtn && sessionsModal) {
         sessionsModal.classList.remove('hidden');
         loadSessions();
     });
-    closeBtn.addEventListener('click', () => sessionsModal.classList.add('hidden'));
     sessionsModal.addEventListener('click', (e) => {
         if (e.target === sessionsModal) sessionsModal.classList.add('hidden');
-    });
-    revokeCodeBtn.addEventListener('click', async () => {
-        revokeCodeBtn.disabled = true;
-        try {
-            const res = await fetch('/api/auth/device/revoke-code', { method: 'POST' });
-            alert(res.ok ? 'Active login code revoked (if any).' : 'Could not revoke the code.');
-        } finally {
-            revokeCodeBtn.disabled = false;
-        }
     });
 }
 
