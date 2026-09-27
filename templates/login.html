@@ -8,6 +8,13 @@
         <input type="password" name="key" required autofocus autocomplete="off" placeholder="gsk_...">
         <button type="submit">Sign in</button>
     </form>
+    <p class="device-code-sep">— or —</p>
+    <form action="/api/auth/login" method="post">
+        <input type="text" name="code" required inputmode="numeric" pattern="\d{6}" maxlength="6"
+               autocomplete="one-time-code" placeholder="6-digit code">
+        <button type="submit">Use code</button>
+    </form>
+    <p>Got a 6-digit code from a signed-in device? Enter it above — no API key needed.</p>
     {% if error %}
     <p class="error">{{ error }}</p>
     {% endif %}

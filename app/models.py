@@ -100,12 +100,12 @@ class StoredFile(Base):
 
 
 class DeviceInvite(Base):
-    """One-time link for adding a new device without entering the Groq key on it."""
+    """Short-lived one-time code that lets a new device log in without the key."""
 
     __tablename__ = "device_invites"
 
     id = Column(Integer, primary_key=True, index=True)
-    token = Column(String(64), unique=True, index=True, nullable=False)
+    code = Column(String(6), unique=True, index=True, nullable=False)
     user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
     created_at = Column(DateTime, default=now_utc)
     expires_at = Column(DateTime, nullable=False)

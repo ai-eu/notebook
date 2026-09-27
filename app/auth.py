@@ -106,31 +106,39 @@ async def login_with_groq_key(db: AsyncSession, key: str) -> tuple[User | None, 
     return user, None
 
 
-DEVICE_INVITE_TTL_SECONDS = 600  # invites are short-lived: 10 minutes
+DEVICE_INVITE_TTL_SECONDS = 600  # codes are short-lived: 10 minutes
 
 
 async def create_device_invite(db: AsyncSession, user_id: int) -> str:
-    """Generate a one-time token that lets a new device log in without the key."""
+    """Generate a one-time 6-digit code that a new device can redeem instead of the key."""
     from app.models import DeviceInvite
 
-    token = secrets.token_urlsafe(32)
-    expires = _now() + timedelta(seconds=DEVICE_INVITE_TTL_SECONDS)
-    db.add(DeviceInvite(token=token, user_id=user_id, expires_at=expires))
-    # Housekeeping: drop expired/used invites so the table stays tiny.
-    await db.execute(
-        sa_delete(DeviceInvite).where(
-            (DeviceInvite.expires_at < _now()) | (DeviceInvite.used_at.isnot(None))
-        )
-    )
+    # Housekeeping first: drop expired/used codes so the table stays tiny.
+    await revoke_device_invites(db, user_id)
+
+    # Retry on the (astronomically unlikely) unique-code collision.
+    for _ in range(5):
+        code = f"{secrets.randbelow(1_000_000):06d}"
+        result = await db.execute(select(DeviceInvite).where(DeviceInvite.code == code))
+        if result.scalar_one_or_none() is None:
+            break
+    else:
+        return await create_device_invite(db, user_id)
+
+    expires = _now().replace(tzinfo=None) + timedelta(seconds=DEVICE_INVITE_TTL_SECONDS)
+    db.add(DeviceInvite(code=code, user_id=user_id, expires_at=expires))
     await db.commit()
-    return token
+    return code
 
 
-async def redeem_device_invite(db: AsyncSession, token: str) -> User | None:
-    """Consume a one-time invite token and return its user, or None if invalid."""
+async def redeem_device_invite(db: AsyncSession, code: str) -> User | None:
+    """Consume a one-time code and return its user, or None if invalid."""
     from app.models import DeviceInvite
 
-    result = await db.execute(select(DeviceInvite).where(DeviceInvite.token == token))
+    code = (code or "").strip()
+    if not code.isdigit() or len(code) != 6:
+        return None
+    result = await db.execute(select(DeviceInvite).where(DeviceInvite.code == code))
     invite = result.scalar_one_or_none()
     # SQLite returns naive datetimes; compare in the same (UTC) convention.
     now = _now().replace(tzinfo=None)
@@ -139,6 +147,35 @@ async def redeem_device_invite(db: AsyncSession, token: str) -> User | None:
     invite.used_at = now
     await db.commit()
     return await db.get(User, invite.user_id)
+
+
+async def revoke_device_invites(db: AsyncSession, user_id: int) -> None:
+    """Immediately invalidate any active invite codes of the user."""
+    from app.models import DeviceInvite
+
+    await db.execute(sa_delete(DeviceInvite).where(DeviceInvite.user_id == user_id))
+    await db.commit()
+
+
+async def list_user_sessions(db: AsyncSession, user_id: int) -> list[UserSession]:
+    """Active (non-expired) sessions of the user, newest first."""
+    result = await db.execute(
+        select(UserSession)
+        .where(UserSession.user_id == user_id, UserSession.expires_at > _now())
+        .order_by(UserSession.created_at.desc())
+    )
+    return list(result.scalars())
+
+
+async def delete_other_session(db: AsyncSession, user_id: int, session_id: str) -> bool:
+    """Revoke one device session of this user. Returns True if it was deleted."""
+    result = await db.execute(
+        sa_delete(UserSession).where(
+            UserSession.id == session_id, UserSession.user_id == user_id
+        )
+    )
+    await db.commit()
+    return result.rowcount > 0
 
 
 async def create_session(db: AsyncSession, user_id: int, ip: str | None = None) -> str:

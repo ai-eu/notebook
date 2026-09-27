@@ -30,8 +30,23 @@ async def init_db() -> None:
     from app import models  # noqa: F401
 
     async with engine.begin() as conn:
+        await conn.run_sync(_migrate_device_invites)
         await conn.run_sync(Base.metadata.create_all)
         await conn.run_sync(_add_missing_columns)
+
+
+def _migrate_device_invites(conn) -> None:
+    """device_invites switched from long link tokens to 6-digit codes.
+
+    The table only holds short-lived one-time codes, so dropping the old shape
+    loses nothing — it is recreated by create_all right after.
+    """
+    inspector = inspect(conn)
+    if "device_invites" not in inspector.get_table_names():
+        return
+    columns = {column["name"] for column in inspector.get_columns("device_invites")}
+    if "code" not in columns and "token" in columns:
+        conn.execute(text("DROP TABLE device_invites"))
 
 
 def _add_missing_columns(conn) -> None:

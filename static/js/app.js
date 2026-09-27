@@ -50,23 +50,92 @@ function setupDropzone(zone, fileInputEl, onFile) {
 
 setupDropzone(dropzone, fileInput, handleFile);
 
-// --- Device link: one-time URL to log in on another device without the API key ---
+// --- Device login code: one-time 6-digit code for another device, no API key needed ---
 
-const deviceLinkBtn = document.getElementById('device-link-btn');
-if (deviceLinkBtn) {
-    deviceLinkBtn.addEventListener('click', async () => {
-        deviceLinkBtn.disabled = true;
+const deviceCodeBtn = document.getElementById('device-code-btn');
+if (deviceCodeBtn) {
+    deviceCodeBtn.addEventListener('click', async () => {
+        deviceCodeBtn.disabled = true;
         try {
-            const res = await fetch('/api/auth/device/link');
+            const res = await fetch('/api/auth/device/code', { method: 'POST' });
             if (!res.ok) throw new Error('failed');
-            const { url, ttl_seconds: ttl } = await res.json();
-            await navigator.clipboard.writeText(url).catch(() => {});
+            const { code, ttl_seconds: ttl } = await res.json();
+            await navigator.clipboard.writeText(code).catch(() => {});
             const minutes = Math.round(ttl / 60);
-            alert(`Login link (valid ${minutes} min, one-time use, copied to clipboard):\n\n${url}`);
+            alert(`Login code (valid ${minutes} min, one-time use, copied to clipboard):\n\n${code}\n\nEnter it on the sign-in page of the other device.\nGenerating a new code or using "Revoke login code" invalidates this one.`);
         } catch {
-            alert('Could not create a login link. Please try again.');
+            alert('Could not create a login code. Please try again.');
         } finally {
-            deviceLinkBtn.disabled = false;
+            deviceCodeBtn.disabled = false;
+        }
+    });
+}
+
+// --- Devices and access: list active sessions, revoke individual devices ---
+
+const sessionsBtn = document.getElementById('sessions-btn');
+const sessionsModal = document.getElementById('sessions-modal');
+if (sessionsBtn && sessionsModal) {
+    const sessionsList = document.getElementById('sessions-list');
+    const closeBtn = document.getElementById('sessions-close-btn');
+    const revokeCodeBtn = document.getElementById('revoke-code-btn');
+
+    function fmtDate(iso) {
+        if (!iso) return 'unknown time';
+        try { return new Date(iso).toLocaleString(); } catch { return iso; }
+    }
+
+    async function loadSessions() {
+        sessionsList.textContent = 'Loading…';
+        try {
+            const res = await fetch('/api/auth/sessions');
+            if (!res.ok) throw new Error('failed');
+            const { sessions } = await res.json();
+            if (!sessions.length) {
+                sessionsList.textContent = 'No active sessions.';
+                return;
+            }
+            sessionsList.innerHTML = '';
+            sessions.forEach(s => {
+                const row = document.createElement('div');
+                row.className = 'session-row';
+                const label = document.createElement('span');
+                label.textContent = `${fmtDate(s.created_at)}${s.ip_address ? ' · ' + s.ip_address : ''}${s.current ? ' · this device' : ''}`;
+                row.appendChild(label);
+                if (!s.current) {
+                    const btn = document.createElement('button');
+                    btn.type = 'button';
+                    btn.textContent = 'Revoke';
+                    btn.addEventListener('click', async () => {
+                        btn.disabled = true;
+                        const del = await fetch('/api/auth/sessions/' + encodeURIComponent(s.id), { method: 'DELETE' });
+                        if (del.ok) { row.remove(); }
+                        else { btn.disabled = false; alert('Could not revoke this session.'); }
+                    });
+                    row.appendChild(btn);
+                }
+                sessionsList.appendChild(row);
+            });
+        } catch {
+            sessionsList.textContent = 'Failed to load sessions.';
+        }
+    }
+
+    sessionsBtn.addEventListener('click', () => {
+        sessionsModal.classList.remove('hidden');
+        loadSessions();
+    });
+    closeBtn.addEventListener('click', () => sessionsModal.classList.add('hidden'));
+    sessionsModal.addEventListener('click', (e) => {
+        if (e.target === sessionsModal) sessionsModal.classList.add('hidden');
+    });
+    revokeCodeBtn.addEventListener('click', async () => {
+        revokeCodeBtn.disabled = true;
+        try {
+            const res = await fetch('/api/auth/device/revoke-code', { method: 'POST' });
+            alert(res.ok ? 'Active login code revoked (if any).' : 'Could not revoke the code.');
+        } finally {
+            revokeCodeBtn.disabled = false;
         }
     });
 }

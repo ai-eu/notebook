@@ -275,6 +275,62 @@ button:hover {
     display: none !important;
 }
 
+/* --- Device code separator on the login page --- */
+
+.device-code-sep {
+    text-align: center;
+    color: var(--muted);
+    margin: 1rem 0;
+}
+
+/* --- Devices and access modal --- */
+
+.sessions-modal {
+    position: fixed;
+    inset: 0;
+    background: rgba(0, 0, 0, 0.5);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    z-index: 100;
+}
+
+.sessions-modal-box {
+    background: var(--surface, #fff);
+    color: var(--text, inherit);
+    border-radius: 12px;
+    padding: 1.25rem 1.5rem;
+    width: min(92vw, 480px);
+    max-height: 80vh;
+    overflow-y: auto;
+}
+
+.sessions-modal-box h2 {
+    margin-top: 0;
+    font-size: 1.1rem;
+}
+
+.session-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 0.75rem;
+    padding: 0.4rem 0;
+    border-bottom: 1px solid var(--surface-hover, #eee);
+    font-size: 0.9rem;
+}
+
+.session-row button {
+    cursor: pointer;
+}
+
+.sessions-actions {
+    display: flex;
+    justify-content: space-between;
+    gap: 0.75rem;
+    margin-top: 1rem;
+}
+
 .progress-area {
     margin-bottom: 1.5rem;
 }
