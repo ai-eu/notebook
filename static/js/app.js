@@ -50,6 +50,27 @@ function setupDropzone(zone, fileInputEl, onFile) {
 
 setupDropzone(dropzone, fileInput, handleFile);
 
+// --- Device link: one-time URL to log in on another device without the API key ---
+
+const deviceLinkBtn = document.getElementById('device-link-btn');
+if (deviceLinkBtn) {
+    deviceLinkBtn.addEventListener('click', async () => {
+        deviceLinkBtn.disabled = true;
+        try {
+            const res = await fetch('/api/auth/device/link');
+            if (!res.ok) throw new Error('failed');
+            const { url, ttl_seconds: ttl } = await res.json();
+            await navigator.clipboard.writeText(url).catch(() => {});
+            const minutes = Math.round(ttl / 60);
+            alert(`Login link (valid ${minutes} min, one-time use, copied to clipboard):\n\n${url}`);
+        } catch {
+            alert('Could not create a login link. Please try again.');
+        } finally {
+            deviceLinkBtn.disabled = false;
+        }
+    });
+}
+
 // --- TTS mode: detected from the uploaded file's format (.txt / .md) ---
 
 let voicesLoaded = false;

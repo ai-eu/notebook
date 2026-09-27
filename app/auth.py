@@ -106,6 +106,41 @@ async def login_with_groq_key(db: AsyncSession, key: str) -> tuple[User | None, 
     return user, None
 
 
+DEVICE_INVITE_TTL_SECONDS = 600  # invites are short-lived: 10 minutes
+
+
+async def create_device_invite(db: AsyncSession, user_id: int) -> str:
+    """Generate a one-time token that lets a new device log in without the key."""
+    from app.models import DeviceInvite
+
+    token = secrets.token_urlsafe(32)
+    expires = _now() + timedelta(seconds=DEVICE_INVITE_TTL_SECONDS)
+    db.add(DeviceInvite(token=token, user_id=user_id, expires_at=expires))
+    # Housekeeping: drop expired/used invites so the table stays tiny.
+    await db.execute(
+        sa_delete(DeviceInvite).where(
+            (DeviceInvite.expires_at < _now()) | (DeviceInvite.used_at.isnot(None))
+        )
+    )
+    await db.commit()
+    return token
+
+
+async def redeem_device_invite(db: AsyncSession, token: str) -> User | None:
+    """Consume a one-time invite token and return its user, or None if invalid."""
+    from app.models import DeviceInvite
+
+    result = await db.execute(select(DeviceInvite).where(DeviceInvite.token == token))
+    invite = result.scalar_one_or_none()
+    # SQLite returns naive datetimes; compare in the same (UTC) convention.
+    now = _now().replace(tzinfo=None)
+    if invite is None or invite.used_at is not None or invite.expires_at < now:
+        return None
+    invite.used_at = now
+    await db.commit()
+    return await db.get(User, invite.user_id)
+
+
 async def create_session(db: AsyncSession, user_id: int, ip: str | None = None) -> str:
     token = secrets.token_urlsafe(32)
     expires = _now() + timedelta(days=settings.session_expire_days)

@@ -99,4 +99,19 @@ class StoredFile(Base):
     __table_args__ = (UniqueConstraint("recording_id", "kind", "idx", name="uq_stored_file"),)
 
 
+class DeviceInvite(Base):
+    """One-time link for adding a new device without entering the Groq key on it."""
+
+    __tablename__ = "device_invites"
+
+    id = Column(Integer, primary_key=True, index=True)
+    token = Column(String(64), unique=True, index=True, nullable=False)
+    user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
+    created_at = Column(DateTime, default=now_utc)
+    expires_at = Column(DateTime, nullable=False)
+    used_at = Column(DateTime, nullable=True)
+
+    user = relationship("User")
+
+
 
