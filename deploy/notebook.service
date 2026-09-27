@@ -1,0 +1,15 @@
+[Unit]
+Description=Notebook Transcriber
+After=network.target
+
+[Service]
+User=www-data
+Group=www-data
+WorkingDirectory=/opt/apps/notebook
+EnvironmentFile=/opt/apps/notebook/.env
+ExecStart=/opt/apps/notebook/venv/bin/uvicorn app.main:app --host 127.0.0.1 --port 8000
+Restart=always
+RestartSec=3
+
+[Install]
+WantedBy=multi-user.target

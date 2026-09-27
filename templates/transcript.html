@@ -33,5 +33,5 @@ window.ORIGINAL_FILENAME = "{{ recording.original_filename | e }}";
 window.TRANSCRIPT = {{ transcript | tojson | safe }};
 window.TXT_READY = {{ txt_ready | tojson }};
 </script>
-<script src="/static/js/player.js"></script>
+<script src="/static/js/player.js?v={{ static_v }}"></script>
 {% endblock %}

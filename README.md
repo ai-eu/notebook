@@ -1,4 +1,4 @@
-# Dictaphone / iPhone Audio Transcription Service
+# Notebook / iPhone Audio Transcription Service
 
 FastAPI web app for drag-and-drop audio/video upload, automatic MP3 conversion, Groq Whisper transcription, and a transcript player with sentence highlighting.
 
@@ -27,7 +27,7 @@ FastAPI web app for drag-and-drop audio/video upload, automatic MP3 conversion, 
 
 ```bash
 # Clone/copy the project
-cd dictaphone
+cd notebook
 
 # Create .env from the example
 cp .env.example .env
@@ -174,15 +174,15 @@ sudo apt install -y python3.11 python3.11-venv ffmpeg nginx certbot python3-cert
 2. Copy the project:
 
 ```bash
-sudo mkdir -p /opt/dictaphone
-sudo cp -r . /opt/dictaphone
-sudo chown -R www-data:www-data /opt/dictaphone
+sudo mkdir -p /opt/apps/notebook
+sudo cp -r . /opt/apps/notebook
+sudo chown -R www-data:www-data /opt/apps/notebook
 ```
 
 3. Configure the environment:
 
 ```bash
-cd /opt/dictaphone
+cd /opt/apps/notebook
 sudo -u www-data cp .env.example .env
 # edit .env: SESSION_COOKIE_SECURE=true, TRUST_PROXY_HEADERS=true (the app runs behind nginx)
 
@@ -193,16 +193,16 @@ sudo -u www-data venv/bin/pip install -r requirements.txt
 4. Systemd:
 
 ```bash
-sudo cp deploy/dictaphone.service /etc/systemd/system/
+sudo cp deploy/notebook.service /etc/systemd/system/
 sudo systemctl daemon-reload
-sudo systemctl enable --now dictaphone
+sudo systemctl enable --now notebook
 ```
 
 5. Nginx + HTTPS:
 
 ```bash
-sudo cp deploy/nginx.conf /etc/nginx/sites-available/dictaphone
-sudo ln -s /etc/nginx/sites-available/dictaphone /etc/nginx/sites-enabled/
+sudo cp deploy/nginx.conf /etc/nginx/sites-available/notebook
+sudo ln -s /etc/nginx/sites-available/notebook /etc/nginx/sites-enabled/
 sudo rm /etc/nginx/sites-enabled/default
 sudo nginx -t
 sudo systemctl restart nginx
@@ -213,7 +213,7 @@ sudo certbot --nginx -d example.com
 
 ## Updating production
 
-The app runs from `/opt/dictaphone` as the `dictaphone` systemd service (user `www-data`),
+The app runs from `/opt/apps/notebook` as the `notebook` systemd service (user `www-data`),
 behind nginx. An update is: get the new code onto the server, refresh dependencies if
 `requirements.txt` changed, restart the service.
 
@@ -223,7 +223,7 @@ behind nginx. An update is: get the new code onto the server, refresh dependenci
 git push origin main          # or whichever branch prod tracks
 
 ssh user@server
-cd /opt/dictaphone
+cd /opt/apps/notebook
 sudo -u www-data git pull
 ```
 
@@ -236,9 +236,9 @@ sudo -u www-data venv/bin/pip install -r requirements.txt
 3. Restart and verify:
 
 ```bash
-sudo systemctl restart dictaphone
-systemctl status dictaphone
-journalctl -u dictaphone -f   # watch the log if anything looks off
+sudo systemctl restart notebook
+systemctl status notebook
+journalctl -u notebook -f   # watch the log if anything looks off
 ```
 
 ### Alternative: rsync instead of git
@@ -251,19 +251,19 @@ rsync -avz --delete \
   --exclude .git/ --exclude .env --exclude venv/ \
   --exclude 'app.db*' --exclude data/ --exclude cookies.txt \
   --exclude __pycache__/ --exclude '*.pyc' --exclude .pytest_cache/ --exclude '*.log' \
-  ./ user@server:/tmp/dictaphone/
+  ./ user@server:/tmp/notebook/
 
 ssh user@server
-sudo rsync -a --delete /tmp/dictaphone/ /opt/dictaphone/
-sudo chown -R www-data:www-data /opt/dictaphone
+sudo rsync -a --delete /tmp/notebook/ /opt/apps/notebook/
+sudo chown -R www-data:www-data /opt/apps/notebook
 sudo -u www-data venv/bin/pip install -r requirements.txt   # if deps changed
-sudo systemctl restart dictaphone
+sudo systemctl restart notebook
 ```
 
 Notes:
 
-- Never overwrite `/opt/dictaphone/.env`, `app.db` or `data/` — they live only on the
+- Never overwrite `/opt/apps/notebook/.env`, `app.db` or `data/` — they live only on the
   server and are gitignored. `data/` holds every recording and transcript.
-- After changing `deploy/dictaphone.service`: `sudo systemctl daemon-reload` then restart.
+- After changing `deploy/notebook.service`: `sudo systemctl daemon-reload` then restart.
 - After changing `deploy/nginx.conf`: copy it into `sites-available`, `sudo nginx -t`,
   `sudo systemctl reload nginx`.
