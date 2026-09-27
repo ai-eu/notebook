@@ -119,6 +119,7 @@ header a:hover {
 }
 
 .theme-toggle,
+.icon-btn,
 .logout-btn {
     display: inline-flex;
     align-items: center;
@@ -135,6 +136,7 @@ header a:hover {
 }
 
 .theme-toggle:hover,
+.icon-btn:hover,
 .logout-btn:hover {
     color: var(--text);
     border-color: var(--text);
@@ -143,6 +145,11 @@ header a:hover {
 
 .theme-toggle svg {
     display: none;
+    width: 1rem;
+    height: 1rem;
+}
+
+.icon-btn svg {
     width: 1rem;
     height: 1rem;
 }
