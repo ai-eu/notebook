@@ -93,6 +93,9 @@ def test_sessions_list_and_revocation():
                 assert any(s["current"] for s in sessions)
                 other_session = next(s for s in sessions if not s["current"])
 
+                # Every session reports a human-readable device description.
+                assert all(s.get("device") for s in sessions)
+
                 deleted = await client.delete(
                     "/api/auth/sessions/" + other_session["id"]
                 )

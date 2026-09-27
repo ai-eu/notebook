@@ -327,6 +327,10 @@ button:hover {
     font-size: 0.9rem;
 }
 
+.session-row small {
+    color: var(--muted);
+}
+
 .session-row button {
     cursor: pointer;
 }

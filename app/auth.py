@@ -178,10 +178,65 @@ async def delete_other_session(db: AsyncSession, user_id: int, session_id: str) 
     return result.rowcount > 0
 
 
-async def create_session(db: AsyncSession, user_id: int, ip: str | None = None) -> str:
+def describe_user_agent(user_agent: str | None) -> str:
+    """Human-readable device description parsed from a User-Agent header."""
+    if not user_agent:
+        return "Unknown device"
+    ua = user_agent
+
+    # Device kind / OS, roughly in order of specificity.
+    os_name = None
+    if "iPhone" in ua:
+        os_name = "iPhone"
+    elif "iPad" in ua:
+        os_name = "iPad"
+    elif "Android" in ua:
+        os_name = "Android"
+        # Most Android browsers put the device model in the first parentheses.
+        if "(" in ua:
+            part = ua.split("(", 1)[1].split(")", 1)[0]
+            tokens = [t for t in part.split("; ") if "Android" not in t and "Linux" not in t
+                      and not t.startswith("Build") and t.strip() not in ("wv", "K")]
+            if tokens:
+                os_name = f"Android ({tokens[0].strip()})"
+    elif "Windows" in ua:
+        os_name = "Windows"
+    elif "Mac OS X" in ua or "Macintosh" in ua:
+        os_name = "Mac"
+    elif "CrOS" in ua:
+        os_name = "ChromeOS"
+    elif "Linux" in ua:
+        os_name = "Linux"
+
+    # Browser.
+    browser = None
+    for marker, name in [
+        ("Edg/", "Edge"), ("OPR/", "Opera"), ("Chrome/", "Chrome"),
+        ("Firefox/", "Firefox"), ("Safari/", "Safari"),
+    ]:
+        if marker in ua:
+            browser = name
+            break
+    if browser is None and "iPhone" not in ua and "iPad" not in ua:
+        return os_name or "Unknown device"
+    if browser is None:
+        return os_name or "Mobile browser"
+
+    return f"{os_name or 'Unknown OS'} · {browser}" if os_name else browser
+
+
+async def create_session(
+    db: AsyncSession, user_id: int, ip: str | None = None, user_agent: str | None = None
+) -> str:
     token = secrets.token_urlsafe(32)
     expires = _now() + timedelta(days=settings.session_expire_days)
-    db.add(UserSession(id=token, user_id=user_id, expires_at=expires, ip_address=ip))
+    db.add(UserSession(
+        id=token,
+        user_id=user_id,
+        expires_at=expires,
+        ip_address=ip,
+        user_agent=(user_agent or "")[:300],
+    ))
     await db.commit()
     return token
 

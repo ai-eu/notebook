@@ -31,6 +31,7 @@ class Session(Base):
     created_at = Column(DateTime, default=now_utc)
     expires_at = Column(DateTime, nullable=False)
     ip_address = Column(String(64), nullable=True)
+    user_agent = Column(String(300), nullable=True)
 
     user = relationship("User", back_populates="sessions")
 

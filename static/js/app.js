@@ -81,8 +81,13 @@ if (sessionsBtn && sessionsModal) {
     const revokeCodeBtn = document.getElementById('revoke-code-btn');
 
     function fmtDate(iso) {
+        // Short form: "Sep 27, 13:28" — seconds are noise here.
         if (!iso) return 'unknown time';
-        try { return new Date(iso).toLocaleString(); } catch { return iso; }
+        try {
+            return new Date(iso).toLocaleString(undefined, {
+                month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit'
+            });
+        } catch { return iso; }
     }
 
     async function loadSessions() {
@@ -100,7 +105,8 @@ if (sessionsBtn && sessionsModal) {
                 const row = document.createElement('div');
                 row.className = 'session-row';
                 const label = document.createElement('span');
-                label.textContent = `${fmtDate(s.created_at)}${s.ip_address ? ' · ' + s.ip_address : ''}${s.current ? ' · this device' : ''}`;
+                const device = s.device || 'Unknown device';
+                label.innerHTML = `<strong>${device}</strong><br><small>${fmtDate(s.created_at)}${s.ip_address ? ' · ' + s.ip_address : ''}${s.current ? ' · this device' : ''}</small>`;
                 row.appendChild(label);
                 if (!s.current) {
                     const btn = document.createElement('button');

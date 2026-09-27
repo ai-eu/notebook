@@ -12,6 +12,7 @@ from app.auth import (
     get_auth_cookie_options,
     delete_session,
     list_user_sessions,
+    describe_user_agent,
     login_rate_limited,
     login_with_groq_key,
     record_login_failure,
@@ -64,7 +65,7 @@ async def login(
         )
 
     clear_login_failures(ip)
-    session_id = await create_session(db, user.id, ip=ip)
+    session_id = await create_session(db, user.id, ip=ip, user_agent=request.headers.get("user-agent"))
     response = RedirectResponse("/", status_code=303)
     response.set_cookie(settings.session_cookie_name, session_id, **get_auth_cookie_options())
     return response
@@ -104,6 +105,7 @@ async def sessions_list(request: Request, user: User = Depends(require_user), db
             "current": s.id == current,
             "created_at": s.created_at.isoformat() if s.created_at else None,
             "ip_address": s.ip_address,
+            "device": describe_user_agent(s.user_agent),
         }
         for s in await list_user_sessions(db, user.id)
     ]
