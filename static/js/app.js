@@ -50,22 +50,22 @@ function setupDropzone(zone, fileInputEl, onFile) {
 
 setupDropzone(dropzone, fileInput, handleFile);
 
-// --- Device login code: one-time 6-digit code for another device, no API key needed ---
+// --- Device login code: one-time 6-digit code, shown inside the devices modal ---
 
 const deviceCodeBtn = document.getElementById('device-code-btn');
-if (deviceCodeBtn) {
+const deviceCodeArea = document.getElementById('device-code-area');
+if (deviceCodeBtn && deviceCodeArea) {
     deviceCodeBtn.addEventListener('click', async () => {
         deviceCodeBtn.disabled = true;
         try {
             const res = await fetch('/api/auth/device/code', { method: 'POST' });
             if (!res.ok) throw new Error('failed');
-            const { code, ttl_seconds: ttl } = await res.json();
+            const { code } = await res.json();
             await navigator.clipboard.writeText(code).catch(() => {});
-            const minutes = Math.round(ttl / 60);
-            alert(`Login code (valid ${minutes} min, one-time use, copied to clipboard):\n\n${code}\n\nEnter it on the sign-in page of the other device.\nGenerating a new code or using "Revoke login code" invalidates this one.`);
+            deviceCodeArea.innerHTML = `<div class="device-code">${code}</div>`;
+            deviceCodeBtn.remove();
         } catch {
-            alert('Could not create a login code. Please try again.');
-        } finally {
+            deviceCodeArea.innerHTML = '';
             deviceCodeBtn.disabled = false;
         }
     });
