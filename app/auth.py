@@ -269,10 +269,20 @@ async def delete_user_sessions(db: AsyncSession, user_id: int) -> None:
     await db.commit()
 
 
-def get_auth_cookie_options() -> dict:
+def get_auth_cookie_options(request: Request | None = None) -> dict:
+    secure = settings.session_cookie_secure
+    if request is not None:
+        # A `Secure` cookie is silently dropped by browsers on plain HTTP, which
+        # locks devices out when the app is served without TLS (e.g. LAN access).
+        # Behind a trusted proxy nginx sets x-forwarded-proto; honour it.
+        if settings.trust_proxy_headers:
+            proto = (request.headers.get("x-forwarded-proto") or "").split(",")[0].strip()
+            secure = secure and proto == "https"
+        elif request.url.scheme != "https":
+            secure = False
     return {
         "httponly": True,
-        "secure": settings.session_cookie_secure,
+        "secure": secure,
         "samesite": settings.session_cookie_samesite,
         "path": "/",
         "max_age": settings.session_expire_days * 86400,

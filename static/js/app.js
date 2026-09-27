@@ -529,6 +529,11 @@ function renderRecordings(recordings) {
 async function loadRecordings() {
     try {
         const res = await fetch('/api/recordings');
+        if (res.status === 401) {
+            window.location.href = '/api/auth/login';
+            return;
+        }
+        if (!res.ok) throw new Error('failed');
         const data = await res.json();
         renderRecordings(data);
     } catch (e) {

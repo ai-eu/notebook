@@ -67,7 +67,7 @@ async def login(
     clear_login_failures(ip)
     session_id = await create_session(db, user.id, ip=ip, user_agent=request.headers.get("user-agent"))
     response = RedirectResponse("/", status_code=303)
-    response.set_cookie(settings.session_cookie_name, session_id, **get_auth_cookie_options())
+    response.set_cookie(settings.session_cookie_name, session_id, **get_auth_cookie_options(request))
     return response
 
 
