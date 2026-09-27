@@ -81,12 +81,13 @@ if (sessionsBtn && sessionsModal) {
     const revokeCodeBtn = document.getElementById('revoke-code-btn');
 
     function fmtDate(iso) {
-        // Short form: "Sep 27, 13:28" — seconds are noise here.
+        // Short 24-hour form: "Sep 27, 13:28" — independent of the locale's 12/24h preference.
         if (!iso) return 'unknown time';
         try {
-            return new Date(iso).toLocaleString(undefined, {
-                month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit'
-            });
+            const d = new Date(iso);
+            if (isNaN(d)) return iso;
+            const time = `${d.getHours().toString().padStart(2, '0')}:${d.getMinutes().toString().padStart(2, '0')}`;
+            return `${MONTHS[d.getMonth()]} ${d.getDate()}, ${time}`;
         } catch { return iso; }
     }
 
