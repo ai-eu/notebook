@@ -2,6 +2,7 @@ import asyncio
 import json
 import logging
 import re
+import shutil
 from pathlib import Path
 
 from app.config import settings
@@ -449,7 +450,9 @@ async def synthesize_chunk(provider, text: str, voice: str, out_path: Path) -> N
 async def concat_chunks(chunk_paths: list[Path], out_path: Path) -> None:
     """Glue the per-chunk audio files into one MP3 at the target bitrate."""
     if len(chunk_paths) == 1:
-        chunk_paths[0].replace(out_path)
+        # Copy, not move: the caller still probes each chunk's duration after
+        # concatenation, then removes chunks/ as a whole.
+        shutil.copyfile(chunk_paths[0], out_path)
         return
     list_file = out_path.parent / "chunks" / "concat.txt"
     lines = "\n".join(f"file '{path.as_posix()}'" for path in chunk_paths)
