@@ -1,3 +1,4 @@
+import logging
 from pathlib import Path
 
 from fastapi import APIRouter, Depends, HTTPException, Query
@@ -134,6 +135,14 @@ async def get_translation(
     try:
         translated = await translate_sentences(sentences, lang, api_key)
     except TranslationError as exc:
+        # The reason also goes to the response body, so the UI can show it.
+        logging.warning(
+            "Translation failed for %s (%s, %d sentences): %s",
+            recording_id,
+            lang,
+            len(sentences),
+            exc,
+        )
         raise HTTPException(status_code=502, detail=str(exc))
 
     cache_path.write_text(_join_paragraphs(translated, paragraphs), encoding="utf-8")

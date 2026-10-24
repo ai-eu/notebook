@@ -119,7 +119,8 @@ python -m app.cli tg-cleanup [--dry-run]
 - Колонка перевода показывается выбором языка в компактной выпадайке (коды en/uk/pt/es); выбора по умолчанию нет (перевод не выводится даже при наличии кэша), состояние не сохраняется.
 - Перевод кэшируется в `formatted-<lang>.txt` рядом с `formatted.txt` и архивируется в Telegram-канал.
 - Настройки: `TRANSLATION_ENABLED`, `TRANSLATION_TARGET_LANGUAGES`, `TRANSLATION_DEFAULT_LANGUAGE`, `TRANSLATION_BATCH_SIZE`.
-- API: `GET /api/translate/{recording_id}?lang=<code>`, `DELETE /api/translate/{recording_id}?lang=<code>`.
+- API: `GET /api/translate/{recording_id}?lang=<code>`, `DELETE /api/translate/{recording_id}?lang=<code>`. При сбое Groq — HTTP 502, причина в `detail` и в логе (`logging.warning`).
+- Перевод идёт синхронно (батчами), поэтому в nginx подняты `proxy_read_timeout`/`proxy_send_timeout` до 300s.
 
 ### 2. Интерактивное обучение по транскрипту
 - Карточки «пропущенное слово» (cloze) из транскрипта.

@@ -98,7 +98,7 @@
                 fail(
                     res.status === 404
                         ? "Перевод недоступен для этой записи."
-                        : `Не удалось загрузить перевод: HTTP ${res.status}`
+                        : await errorMessage(res)
                 );
                 return;
             }
@@ -112,6 +112,18 @@
         } catch (exc) {
             fail("Не удалось загрузить перевод: " + String(exc));
         }
+    }
+
+    // The API explains the reason in `detail` (bad key, rate limit, model error).
+    // A proxy (nginx) answers with HTML instead: fall back to the status code.
+    async function errorMessage(res) {
+        try {
+            const data = await res.json();
+            if (data && data.detail) return String(data.detail);
+        } catch (exc) {
+            // Not JSON — nothing to read.
+        }
+        return `Не удалось загрузить перевод: HTTP ${res.status}`;
     }
 
     // Nothing to show: hide the column and return the dropdown to its empty state.

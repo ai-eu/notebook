@@ -204,6 +204,26 @@ def test_translate_sentences_no_key_raises():
     asyncio.run(scenario())
 
 
+def test_translate_reports_the_groq_reason_in_detail(monkeypatch):
+    """A Groq failure becomes HTTP 502 and the reason travels in `detail` for the UI."""
+    async def scenario():
+        async with _client() as client:
+            await client.post("/api/auth/login", data={"key": KEY})
+            user_id = await _signed_in_user_id()
+            await _create_recording(user_id, "rec-groq-fail")
+            fake = FakeAsyncClient(
+                FakeResponse(400, {"error": {"message": "model not found"}})
+            )
+            monkeypatch.setattr(formatter.httpx, "AsyncClient", lambda **kwargs: fake)
+
+            res = await client.get("/api/translate/rec-groq-fail?lang=uk")
+
+            assert res.status_code == 502
+            assert "Groq API error 400" in res.json()["detail"]
+
+    asyncio.run(scenario())
+
+
 TRANSLATED = "Привіт светі.\nЦе тест.\nДо побачення."
 
 
