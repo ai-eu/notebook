@@ -116,7 +116,7 @@ python -m app.cli tg-cleanup [--dry-run]
 - Перевод на украинский (и другие языки из селектора: uk, pt-PT, es, en) через Groq Chat API.
 - Подсветка соответствий между предложениями на двух языках при наведении.
 - Единый источник предложений — строки `formatted.txt`: из них строится колонка оригинала (с таймингами, `build_sentence_units` в `formatter.py`) и они же переводятся, поэтому пары всегда 1:1. Абзацы сохраняются в обеих колонках (`paragraphs` в ответе API).
-- Колонка перевода скрывается/показывается по кнопке, состояние запоминается в localStorage.
+- Колонка перевода показывается выбором языка в компактной выпадайке; выбора по умолчанию нет (перевод не выводится даже при наличии кэша), состояние не сохраняется.
 - Перевод кэшируется в `formatted-<lang>.txt` рядом с `formatted.txt` и архивируется в Telegram-канал.
 - Настройки: `TRANSLATION_ENABLED`, `TRANSLATION_TARGET_LANGUAGES`, `TRANSLATION_DEFAULT_LANGUAGE`, `TRANSLATION_BATCH_SIZE`.
 - API: `GET /api/translate/{recording_id}?lang=<code>`, `DELETE /api/translate/{recording_id}?lang=<code>`.

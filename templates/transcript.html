@@ -26,15 +26,10 @@
 
     {% if translation_enabled %}
     <div class="translation-controls">
-        <button type="button" id="toggle-translation" class="translation-btn" aria-pressed="false">
-            <span class="translation-icon">🌐</span>
-            <span class="translation-label" id="translation-label">{{ translation_language_names.get(translation_default_language, translation_default_language) }}</span>
-        </button>
-        <select id="translation-lang" class="translation-lang-select hidden" aria-label="Target language">
+        <select id="translation-lang" class="translation-lang-select" aria-label="Язык перевода">
+            <option value="" selected>🌐 Перевод</option>
             {% for code in translation_languages %}
-            <option value="{{ code }}"{% if code == translation_default_language %} selected{% endif %}>
-                {{ translation_language_names.get(code, code) }}
-            </option>
+            <option value="{{ code }}">{{ translation_language_names.get(code, code) }}</option>
             {% endfor %}
         </select>
         <span id="translation-hint" class="translation-hint hidden"></span>
@@ -45,7 +40,6 @@
         {% if transcript %}
         <div class="transcript-columns">
             <div class="column original-column">
-                <div class="column-header">Оригинал</div>
                 <div class="sentences" id="original-sentences">
                     {% for paragraph in original_paragraphs %}
                     <div class="transcript-paragraph">
@@ -57,7 +51,6 @@
                 </div>
             </div>
             <div class="column translation-column hidden" id="translation-column">
-                <div class="column-header" id="translation-column-header">Перевод</div>
                 <div class="sentences" id="translated-sentences"></div>
             </div>
         </div>
@@ -75,9 +68,6 @@ window.TRANSCRIPT = {{ transcript | tojson | safe }};
 window.SENTENCE_UNITS = {{ sentence_units | tojson | safe }};
 window.TXT_READY = {{ txt_ready | tojson }};
 window.TRANSLATION_ENABLED = {{ translation_enabled | tojson }};
-window.TRANSLATION_LANGUAGES = {{ translation_languages | tojson }};
-window.TRANSLATION_DEFAULT_LANGUAGE = "{{ translation_default_language }}";
-window.TRANSLATION_LANGUAGE_NAMES = {{ translation_language_names | tojson }};
 </script>
 <script src="/static/js/player.js?v={{ static_v }}"></script>
 <script src="/static/js/translation.js?v={{ static_v }}"></script>

@@ -61,7 +61,7 @@ def test_translate_languages_endpoint():
 
 
 def test_transcript_page_renders_translation_columns():
-    """The page ships the toggle button and both column containers for translation.js."""
+    """The page ships the compact language dropdown and both column containers."""
     async def scenario():
         async with _client() as client:
             await client.post("/api/auth/login", data={"key": KEY})
@@ -70,12 +70,21 @@ def test_transcript_page_renders_translation_columns():
 
             page = await client.get("/t/rec-1")
             assert page.status_code == 200
-            assert 'id="toggle-translation"' in page.text
             assert 'id="translation-lang"' in page.text
             assert 'id="original-sentences"' in page.text
             assert 'id="translation-column"' in page.text
             assert 'id="translated-sentences"' in page.text
             assert "window.TRANSLATION_ENABLED = true" in page.text
+            # No language is preselected, there is no toggle button and no captions.
+            assert '<option value="" selected>🌐 Перевод</option>' in page.text
+            assert 'id="toggle-translation"' not in page.text
+            assert 'class="column-header"' not in page.text
+            # Languages follow the configured order.
+            positions = [
+                page.text.index(f'<option value="{code}"')
+                for code in settings.translation_target_languages
+            ]
+            assert positions == sorted(positions)
 
     asyncio.run(scenario())
 

@@ -835,58 +835,37 @@ h2 {
     border-color: var(--danger);
 }
 
-/* --- Transcript translation: toggle, language selector, two columns --- */
+/* --- Transcript translation: language selector, two columns --- */
 
 .translation-controls {
     display: flex;
     flex-wrap: wrap;
     align-items: center;
+    justify-content: flex-end;
     gap: 0.6rem;
-    margin-bottom: 1.25rem;
+    margin-bottom: 0.75rem;
 }
 
-.translation-btn {
-    display: inline-flex;
-    align-items: center;
-    gap: 0.5rem;
-    padding: 0.45rem 0.9rem;
-    background: var(--surface);
-    border: 1px solid var(--border-strong);
-    border-radius: 6px;
-    color: var(--text);
-    font-size: 0.95rem;
-    cursor: pointer;
-    transition: color 0.15s, background-color 0.15s, border-color 0.15s;
-}
-
-.translation-btn:hover {
-    background: var(--surface-hover);
-    border-color: var(--text);
-}
-
-.translation-btn.active {
-    background: var(--primary-tint);
-    border-color: var(--primary);
-    color: var(--primary);
-}
-
-.translation-icon {
-    font-size: 1.1rem;
-    line-height: 1;
-}
-
+/* Deliberately quiet: the dropdown itself tells which language is shown. */
 .translation-lang-select {
-    padding: 0.45rem 0.6rem;
-    background: var(--surface);
-    border: 1px solid var(--border-strong);
-    border-radius: 6px;
+    padding: 0.25rem 0.4rem;
+    background: transparent;
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    color: var(--muted);
+    font-size: 0.85rem;
+    cursor: pointer;
+}
+
+.translation-lang-select:hover,
+.translation-lang-select:focus {
+    border-color: var(--border-strong);
     color: var(--text);
-    font-size: 0.95rem;
 }
 
 .translation-hint {
     color: var(--muted);
-    font-size: 0.9rem;
+    font-size: 0.85rem;
     font-style: italic;
 }
 
@@ -900,20 +879,6 @@ h2 {
 .transcript-columns .column {
     flex: 1 1 0;
     min-width: 0;
-}
-
-.column-header {
-    margin-bottom: 0.75rem;
-    padding-bottom: 0.4rem;
-    border-bottom: 1px solid var(--border);
-    color: var(--muted);
-    font-size: 0.8rem;
-    text-transform: uppercase;
-    letter-spacing: 0.06em;
-}
-
-.translation-column .column-header {
-    color: var(--primary);
 }
 
 .sentence {

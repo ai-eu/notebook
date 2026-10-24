@@ -91,7 +91,7 @@ class Settings(BaseSettings):
 
     # --- Translation settings (phrase-by-phrase translation of transcripts) ---
     translation_enabled: bool = True
-    translation_target_languages: list[str] = ["uk", "pt-PT", "es", "en"]
+    translation_target_languages: list[str] = ["en", "uk", "pt-PT", "es"]
     translation_default_language: str = "uk"
     translation_batch_size: int = 10
 
