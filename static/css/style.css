@@ -848,18 +848,26 @@ h2 {
 
 /* Deliberately quiet: the dropdown itself tells which language is shown. */
 .translation-lang-select {
-    padding: 0.25rem 0.4rem;
+    appearance: none;
+    padding: 0.2rem 0.3rem;
     background: transparent;
-    border: 1px solid var(--border);
+    border: 1px solid transparent;
     border-radius: 4px;
     color: var(--muted);
     font-size: 0.85rem;
+    line-height: 1.4;
     cursor: pointer;
 }
 
 .translation-lang-select:hover,
 .translation-lang-select:focus {
-    border-color: var(--border-strong);
+    border-color: var(--border);
+    color: var(--text);
+}
+
+/* The popup list is painted by the browser: keep it in the page palette. */
+.translation-lang-select option {
+    background: var(--surface);
     color: var(--text);
 }
 

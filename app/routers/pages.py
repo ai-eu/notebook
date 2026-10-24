@@ -79,15 +79,9 @@ async def transcript_page(
             "txt_ready": formatted_path.exists(),
             "translation_enabled": settings.translation_enabled,
             "translation_languages": settings.translation_target_languages,
-            "translation_language_names": {
-                code: name
-                for code, name in {
-                    "uk": "Українська",
-                    "pt-PT": "Português",
-                    "es": "Español",
-                    "en": "English",
-                }.items()
-                if code in settings.translation_target_languages
+            # Short codes keep the dropdown unobtrusive (pt-PT shows as "pt").
+            "translation_language_labels": {
+                code: code.split("-")[0] for code in settings.translation_target_languages
             },
         },
     )

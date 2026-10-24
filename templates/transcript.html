@@ -27,9 +27,9 @@
     {% if translation_enabled %}
     <div class="translation-controls">
         <select id="translation-lang" class="translation-lang-select" aria-label="Язык перевода">
-            <option value="" selected>🌐 Перевод</option>
+            <option value="" selected>🌐</option>
             {% for code in translation_languages %}
-            <option value="{{ code }}">{{ translation_language_names.get(code, code) }}</option>
+            <option value="{{ code }}">{{ translation_language_labels.get(code, code) }}</option>
             {% endfor %}
         </select>
         <span id="translation-hint" class="translation-hint hidden"></span>

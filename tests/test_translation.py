@@ -76,10 +76,12 @@ def test_transcript_page_renders_translation_columns():
             assert 'id="translated-sentences"' in page.text
             assert "window.TRANSLATION_ENABLED = true" in page.text
             # No language is preselected, there is no toggle button and no captions.
-            assert '<option value="" selected>🌐 Перевод</option>' in page.text
+            assert '<option value="" selected>🌐</option>' in page.text
             assert 'id="toggle-translation"' not in page.text
             assert 'class="column-header"' not in page.text
-            # Languages follow the configured order.
+            # Languages are listed as short codes in the configured order.
+            for code in settings.translation_target_languages:
+                assert f'<option value="{code}">{code.split("-")[0]}</option>' in page.text
             positions = [
                 page.text.index(f'<option value="{code}"')
                 for code in settings.translation_target_languages
