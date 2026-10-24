@@ -32,6 +32,14 @@ ARTIFACTS = (
     ("formatted", "formatted.txt", "text/plain"),
 )
 
+
+def _artifact_kinds() -> tuple[str, ...]:
+    """Return all artifact kind names: 'transcript', 'formatted', and per-language 'formatted-<lang>'."""
+    kinds = ("transcript", "formatted")
+    for lang in settings.translation_target_languages:
+        kinds += (f"formatted-{lang}",)
+    return kinds
+
 _last_send_at = 0.0
 
 
@@ -236,6 +244,25 @@ async def archive_recording(recording_id: str, *, force: bool = False) -> dict:
                     idx=0,
                     total=1,
                     mime_type=mime_type,
+                    existing=existing.get((kind, 0)),
+                )
+                uploaded += 1
+
+            # Archive per-language formatted translations as well.
+            for lang in settings.translation_target_languages:
+                kind = f"formatted-{lang}"
+                name = f"formatted-{lang}.txt"
+                path = folder / name
+                if not path.exists() or (not force and (kind, 0) in existing):
+                    continue
+                await _upload_part(
+                    db,
+                    recording,
+                    path,
+                    kind=kind,
+                    idx=0,
+                    total=1,
+                    mime_type="text/plain",
                     existing=existing.get((kind, 0)),
                 )
                 uploaded += 1

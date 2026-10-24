@@ -23,7 +23,46 @@
     {% if recording.comment %}
     <p class="recording-comment">{{ recording.comment }}</p>
     {% endif %}
-    <div class="transcript-container" id="transcript"></div>
+
+    {% if translation_enabled %}
+    <div class="translation-controls">
+        <button type="button" id="toggle-translation" class="translation-btn" aria-pressed="false">
+            <span class="translation-icon">🌐</span>
+            <span class="translation-label" id="translation-label">{{ translation_language_names.get(translation_default_language, translation_default_language) }}</span>
+        </button>
+        <select id="translation-lang" class="translation-lang-select hidden" aria-label="Target language">
+            {% for code in translation_languages %}
+            <option value="{{ code }}"{% if code == translation_default_language %} selected{% endif %}>
+                {{ translation_language_names.get(code, code) }}
+            </option>
+            {% endfor %}
+        </select>
+        <span id="translation-hint" class="translation-hint hidden"></span>
+    </div>
+    {% endif %}
+
+    <div class="transcript-container" id="transcript">
+        {% if transcript %}
+        <div class="transcript-columns">
+            <div class="column original-column">
+                <div class="column-header">Оригинал</div>
+                <div class="sentences" id="original-sentences">
+                    {% for seg in transcript.get('segments', []) %}
+                    <div class="sentence" data-index="{{ loop.index0 }}" data-start="{{ seg.get('start', 0) }}" data-end="{{ seg.get('end', 0) }}">
+                        {{ seg.get('text', '') }}
+                    </div>
+                    {% endfor %}
+                </div>
+            </div>
+            <div class="column translation-column hidden" id="translation-column">
+                <div class="column-header" id="translation-column-header">Перевод</div>
+                <div class="sentences" id="translated-sentences"></div>
+            </div>
+        </div>
+        {% else %}
+        <p class="no-transcript">Транскрипт ещё не готов.</p>
+        {% endif %}
+    </div>
 </div>
 {% endblock %}
 {% block scripts %}
@@ -32,6 +71,11 @@ window.RECORDING_ID = "{{ recording.recording_id }}";
 window.ORIGINAL_FILENAME = "{{ recording.original_filename | e }}";
 window.TRANSCRIPT = {{ transcript | tojson | safe }};
 window.TXT_READY = {{ txt_ready | tojson }};
+window.TRANSLATION_ENABLED = {{ translation_enabled | tojson }};
+window.TRANSLATION_LANGUAGES = {{ translation_languages | tojson }};
+window.TRANSLATION_DEFAULT_LANGUAGE = "{{ translation_default_language }}";
+window.TRANSLATION_LANGUAGE_NAMES = {{ translation_language_names | tojson }};
 </script>
 <script src="/static/js/player.js?v={{ static_v }}"></script>
+<script src="/static/js/translation.js?v={{ static_v }}"></script>
 {% endblock %}

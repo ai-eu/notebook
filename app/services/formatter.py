@@ -6,10 +6,22 @@ from typing import Any
 import httpx
 from app.config import settings
 
-
-PARAGRAPH_GAP_SECONDS = 1.5
 MAX_LINE_LENGTH = 250
+PARAGRAPH_GAP_SECONDS = 1.5
 GROQ_CHAT_URL = "https://api.groq.com/openai/v1/chat/completions"
+
+
+class TranslationError(Exception):
+    """Raised when translation via Groq fails."""
+
+
+# Language names used in the UI language selector.
+LANGUAGE_NAMES = {
+    "uk": "Українська",
+    "pt-PT": "Português",
+    "es": "Español",
+    "en": "English",
+}
 
 
 # Common abbreviations that should not break the text as a sentence end.
@@ -397,3 +409,93 @@ async def format_transcript(
         api_key,
         use_groq=use_groq,
     )
+
+
+async def translate_sentences(
+    sentences: list[str],
+    target_lang: str,
+    api_key: str | None,
+    batch_size: int | None = None,
+) -> list[str]:
+    """Translate a list of sentences into the target language via Groq Chat API.
+
+    Sentences are sent in batches (each batch = one request) so the model preserves
+    the order and each output line corresponds 1:1 to an input line.
+    """
+    if not api_key:
+        raise TranslationError("No API key available for translation")
+
+    if not sentences:
+        return []
+
+    batch_size = batch_size or settings.translation_batch_size
+    target_name = LANGUAGE_NAMES.get(target_lang, target_lang)
+
+    results: list[str] = []
+    for start in range(0, len(sentences), batch_size):
+        batch = sentences[start : start + batch_size]
+        batch_text = "\n".join(f"{i + 1}. {s}" for i, s in enumerate(batch))
+
+        prompt = (
+            "You are a professional translator. Translate the following numbered "
+            f"sentences into {target_name} ({target_lang}).\n"
+            "Rules:\n"
+            "1. Return exactly one translation per input line.\n"
+            "2. Keep the same line order — line N of the output must translate line N of the input.\n"
+            "3. Do not add, remove, or merge sentences.\n"
+            "4. Do not include the numbering in the output.\n"
+            "5. Do not add any commentary, explanations, or extra text.\n"
+            "6. Preserve names, numbers, and proper nouns as-is.\n"
+            f"7. Translate naturally into {target_name}.\n\n"
+            "Input:\n"
+            f"{batch_text}\n\n"
+            "Output:\n"
+        )
+
+        payload = {
+            "model": settings.groq_chat_model,
+            "messages": [
+                {"role": "system", "content": "You are a helpful translator."},
+                {"role": "user", "content": prompt},
+            ],
+            "temperature": 0.3,
+            "max_tokens": max(300, len(batch_text) // 3 + 200),
+        }
+        headers = {
+            "Authorization": f"Bearer {api_key}",
+            "Content-Type": "application/json",
+        }
+
+        try:
+            async with httpx.AsyncClient(timeout=60.0) as client:
+                response = await client.post(GROQ_CHAT_URL, json=payload, headers=headers)
+        except httpx.HTTPError as exc:
+            raise TranslationError(f"Translation request failed: {exc}") from exc
+
+        if response.status_code in (401, 403):
+            raise TranslationError(f"Groq rejected the API key (HTTP {response.status_code})")
+        if response.status_code == 429:
+            raise TranslationError("Groq rate limit reached. Try again later.")
+        if response.status_code >= 400:
+            raise TranslationError(f"Groq API error {response.status_code}: {response.text[:200]}")
+
+        data = response.json()
+        content = data["choices"][0]["message"]["content"]
+
+        # Parse output lines, stripping any accidental numbering or list markers.
+        translated: list[str] = []
+        for line in content.splitlines():
+            stripped = line.strip()
+            if not stripped:
+                continue
+            stripped = re.sub(r"^\d+\.\s*", "", stripped)
+            stripped = re.sub(r"^[-•]\s*", "", stripped)
+            translated.append(stripped)
+
+        # If the model returned fewer lines than requested, pad with empty strings
+        # so the 1:1 alignment with input sentences is preserved.
+        if len(translated) < len(batch):
+            translated.extend([""] * (len(batch) - len(translated)))
+        results.extend(translated[: len(batch)])
+
+    return results

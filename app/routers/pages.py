@@ -58,5 +58,18 @@ async def transcript_page(
             "recording": recording,
             "transcript": transcript,
             "txt_ready": formatted_path.exists(),
+            "translation_enabled": settings.translation_enabled,
+            "translation_languages": settings.translation_target_languages,
+            "translation_default_language": settings.translation_default_language,
+            "translation_language_names": {
+                code: name
+                for code, name in {
+                    "uk": "Українська",
+                    "pt-PT": "Português",
+                    "es": "Español",
+                    "en": "English",
+                }.items()
+                if code in settings.translation_target_languages
+            },
         },
     )

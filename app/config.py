@@ -89,6 +89,12 @@ class Settings(BaseSettings):
     cache_dir: str = ".cache"
     cache_max_mb: int = 2048
 
+    # --- Translation settings (phrase-by-phrase translation of transcripts) ---
+    translation_enabled: bool = True
+    translation_target_languages: list[str] = ["uk", "pt-PT", "es", "en"]
+    translation_default_language: str = "uk"
+    translation_batch_size: int = 10
+
     @property
     def data_dir_absolute(self) -> Path:
         return (Path.cwd() / self.data_dir).resolve()
