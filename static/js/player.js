@@ -61,14 +61,18 @@ function splitIntoSentences(text) {
 const PARAGRAPH_GAP_SECONDS = 1.5;
 
 function renderTranscript(transcript) {
+    const target = document.getElementById('original-sentences') || transcriptContainer;
+
     if (!transcript) {
-        transcriptContainer.innerHTML = '<p class="status-text">Transcript is still being processed...</p>';
+        if (target === transcriptContainer) {
+            target.innerHTML = '<p class="status-text">Transcript is still being processed...</p>';
+        }
         return;
     }
 
     const segments = transcript.segments || [];
     sentences = [];
-    transcriptContainer.innerHTML = '';
+    target.innerHTML = '';
 
     let currentParagraph = null;
     let prevEnd = null;
@@ -84,7 +88,7 @@ function renderTranscript(transcript) {
         if (!currentParagraph) {
             currentParagraph = document.createElement('div');
             currentParagraph.className = 'transcript-paragraph';
-            transcriptContainer.appendChild(currentParagraph);
+            target.appendChild(currentParagraph);
         }
 
         const parts = splitIntoSentences(text);
@@ -100,7 +104,8 @@ function renderTranscript(transcript) {
             sentences.push({ text: sent, start, end });
 
             const p = document.createElement('p');
-            p.className = 'sentence-line';
+            p.className = 'sentence sentence-line';
+            p.dataset.index = idx;
             p.dataset.idx = idx;
             p.dataset.start = start.toFixed(3);
             p.dataset.end = end.toFixed(3);

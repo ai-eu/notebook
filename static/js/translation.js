@@ -108,6 +108,7 @@
     function showTranslation() {
         if (!translationColumn) return;
         translationColumn.classList.remove("hidden");
+        langSelect?.classList.remove("hidden");
         visible = true;
         localStorage.setItem(VISIBLE_KEY, "true");
         updateToggleLabel();
@@ -119,22 +120,24 @@
     function hideTranslation() {
         if (!translationColumn) return;
         translationColumn.classList.add("hidden");
+        langSelect?.classList.add("hidden");
         visible = false;
         localStorage.setItem(VISIBLE_KEY, "false");
         updateToggleLabel();
     }
 
+    function sentenceAt(container, index) {
+        return container?.querySelector(`.sentence[data-index="${index}"]`) || null;
+    }
+
     function highlightPair(index) {
         highlightedIndex = index;
-        const all = [...(originalSentences?.children || []), ...(translatedSentences?.children || [])];
-        for (const el of all) {
+        for (const el of document.querySelectorAll(".sentence")) {
             el.classList.remove("highlighted");
         }
         if (index < 0) return;
-        const orig = originalSentences?.children[index];
-        const trans = translatedSentences?.children[index];
-        if (orig) orig.classList.add("highlighted");
-        if (trans) trans.classList.add("highlighted");
+        sentenceAt(originalSentences, index)?.classList.add("highlighted");
+        sentenceAt(translatedSentences, index)?.classList.add("highlighted");
     }
 
     // --- Loading translation ---
@@ -142,6 +145,7 @@
     async function loadTranslation(lang) {
         if (!translatedSentences) return;
         translatedSentences.textContent = "";
+        hint.classList.add("hidden");
 
         try {
             const res = await fetch(
@@ -158,8 +162,6 @@
             const data = await res.json();
             const sentences = data.sentences || [];
 
-            // Render translation sentences aligned with originals.
-            const originalEls = originalSentences?.children || [];
             translatedSentences.innerHTML = sentences
                 .map(
                     (text, idx) =>
@@ -167,8 +169,6 @@
                 )
                 .join("");
 
-            // If there are fewer translations than originals, hide the extra originals' partners.
-            // (they remain visible, just without a paired translation)
             highlightPair(highlightedIndex);
         } catch (exc) {
             hint.textContent = "Не удалось загрузить перевод: " + String(exc);

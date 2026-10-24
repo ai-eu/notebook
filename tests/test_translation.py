@@ -59,6 +59,26 @@ def test_translate_languages_endpoint():
     asyncio.run(scenario())
 
 
+def test_transcript_page_renders_translation_columns():
+    """The page ships the toggle button and both column containers for translation.js."""
+    async def scenario():
+        async with _client() as client:
+            await client.post("/api/auth/login", data={"key": KEY})
+            user_id = await _signed_in_user_id()
+            await _create_recording(user_id)
+
+            page = await client.get("/t/rec-1")
+            assert page.status_code == 200
+            assert 'id="toggle-translation"' in page.text
+            assert 'id="translation-lang"' in page.text
+            assert 'id="original-sentences"' in page.text
+            assert 'id="translation-column"' in page.text
+            assert 'id="translated-sentences"' in page.text
+            assert "window.TRANSLATION_ENABLED = true" in page.text
+
+    asyncio.run(scenario())
+
+
 def test_translate_returns_cached_translation():
     async def scenario():
         async with _client() as client:
