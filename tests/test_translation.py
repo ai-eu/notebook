@@ -1,4 +1,5 @@
 import asyncio
+import json
 
 import httpx
 from sqlalchemy import select
@@ -188,5 +189,96 @@ def test_translate_sentences_no_key_raises():
             assert False, "Expected TranslationError"
         except formatter.TranslationError:
             pass
+
+    asyncio.run(scenario())
+
+
+TRANSLATED = "Привіт светі.\nЦе тест.\nДо побачення."
+
+
+def test_translate_returns_paragraph_breaks(monkeypatch):
+    """Paragraphs of formatted.txt survive into the payload and the cache file."""
+    async def scenario():
+        async with _client() as client:
+            await client.post("/api/auth/login", data={"key": KEY})
+            user_id = await _signed_in_user_id()
+            folder = await _create_recording(user_id, "rec-para")
+            (folder / "formatted.txt").write_text(
+                "Hello world.\n\nThis is a test.\nGoodbye.", encoding="utf-8"
+            )
+            fake = FakeAsyncClient(
+                FakeResponse(200, {"choices": [{"message": {"content": TRANSLATED}}]})
+            )
+            monkeypatch.setattr(formatter.httpx, "AsyncClient", lambda **kwargs: fake)
+
+            res = await client.get("/api/translate/rec-para?lang=uk")
+
+            assert res.status_code == 200
+            data = res.json()
+            assert data["sentences"] == TRANSLATED.split("\n")
+            assert data["paragraphs"] == [0, 1, 1]
+            assert data["cached"] is False
+            assert (folder / "formatted-uk.txt").read_text(encoding="utf-8") == (
+                "Привіт светі.\n\nЦе тест.\nДо побачення.\n"
+            )
+
+    asyncio.run(scenario())
+
+
+def test_translate_rebuilds_a_cache_with_a_different_line_count(monkeypatch):
+    """A cache from another sentence split is dropped instead of pairing wrong lines."""
+    async def scenario():
+        async with _client() as client:
+            await client.post("/api/auth/login", data={"key": KEY})
+            user_id = await _signed_in_user_id()
+            folder = await _create_recording(user_id, "rec-stale")
+            (folder / "formatted-uk.txt").write_text("Застарілий переклад.", encoding="utf-8")
+            fake = FakeAsyncClient(
+                FakeResponse(200, {"choices": [{"message": {"content": TRANSLATED}}]})
+            )
+            monkeypatch.setattr(formatter.httpx, "AsyncClient", lambda **kwargs: fake)
+
+            res = await client.get("/api/translate/rec-stale?lang=uk")
+
+            assert res.status_code == 200
+            data = res.json()
+            assert data["cached"] is False
+            assert data["sentences"] == TRANSLATED.split("\n")
+
+    asyncio.run(scenario())
+
+
+def test_transcript_page_renders_the_formatted_lines_with_timings():
+    """The original column is built from formatted.txt, exactly like the translation."""
+    async def scenario():
+        async with _client() as client:
+            await client.post("/api/auth/login", data={"key": KEY})
+            user_id = await _signed_in_user_id()
+            folder = await _create_recording(user_id, "rec-units")
+            (folder / "transcript.json").write_text(
+                json.dumps(
+                    {
+                        "text": "hello world how are you.",
+                        "segments": [
+                            {"id": 0, "start": 0.0, "end": 1.0, "text": "hello world"},
+                            {"id": 1, "start": 1.0, "end": 2.0, "text": "how are you."},
+                        ],
+                    }
+                ),
+                encoding="utf-8",
+            )
+            (folder / "formatted.txt").write_text("hello world\n\nhow are you.", encoding="utf-8")
+
+            page = await client.get("/t/rec-units")
+
+            assert page.status_code == 200
+            assert "window.SENTENCE_UNITS" in page.text
+            assert page.text.count('class="sentence sentence-line"') == 2
+            assert page.text.count('class="transcript-paragraph"') == 2
+            # Timings come from the segments, so the player still works.
+            assert 'data-start="0.000"' in page.text
+            assert 'data-end="1.000"' in page.text
+            assert 'data-start="1.000"' in page.text
+            assert 'data-end="1.917"' in page.text
 
     asyncio.run(scenario())

@@ -78,6 +78,12 @@ _SENTENCE_RE = re.compile(r"([.!?]+[\"'»]?)\s+(?=\S)")
 # Capture group so the sub can put \1\n back.
 _CLAUSE_SPLIT_RE = re.compile(r"([,;:])(?=\s+\S)")
 
+# Words used to line the formatted lines up with the transcript timings.
+_WORD_RE = re.compile(r"[^\W_]+", re.UNICODE)
+
+# How far ahead the matcher may look for the next word of a formatted line.
+ALIGN_LOOKAHEAD = 25
+
 # Whisper sometimes parrots its prompt or credits from its training data on
 # silence and noise ("Transcription by CastingWords", "Subtitles by the
 # Amara.org community"). Strip those phrases from the output.
@@ -409,6 +415,144 @@ async def format_transcript(
         api_key,
         use_groq=use_groq,
     )
+
+
+def split_formatted_paragraphs(formatted_text: str) -> list[list[str]]:
+    """Split formatted.txt into paragraphs of non-empty lines.
+
+    A blank line closes a paragraph, which is exactly how the file is written
+    (paragraphs joined with "\\n\\n"), so the page, the player and the translation
+    all see the same sentence list.
+    """
+    paragraphs: list[list[str]] = []
+    current: list[str] = []
+    for raw_line in formatted_text.splitlines():
+        line = raw_line.strip()
+        if line:
+            current.append(line)
+        elif current:
+            paragraphs.append(current)
+            current = []
+    if current:
+        paragraphs.append(current)
+    return paragraphs
+
+
+def _word_timeline(segments: list[dict[str, Any]]) -> list[tuple[str, float, float]]:
+    """Return (word, start, end) for every transcript word.
+
+    A segment only carries its own start/end, so word times are interpolated
+    inside the segment by character offset — the same approach the player uses.
+    """
+    timeline: list[tuple[str, float, float]] = []
+    for seg in segments:
+        text = " ".join((seg.get("text") or "").split())
+        if not text:
+            continue
+        start = float(seg.get("start", 0.0) or 0.0)
+        end = float(seg.get("end", start) or start)
+        span = max(end - start, 0.0)
+        total = len(text)
+        for match in _WORD_RE.finditer(text):
+            timeline.append(
+                (
+                    match.group(0).lower(),
+                    start + (match.start() / total) * span,
+                    start + (match.end() / total) * span,
+                )
+            )
+    return timeline
+
+
+def _match_line(
+    words: list[str],
+    timeline: list[tuple[str, float, float]],
+    pointer: int,
+) -> tuple[float, float, int] | None:
+    """Locate the words of a formatted line in the word timeline.
+
+    Returns the time range of the matched span and the new pointer, or None when
+    no word could be found (the formatter rephrased the line).
+    """
+    start: float | None = None
+    end: float | None = None
+    for word in words:
+        limit = min(len(timeline), pointer + ALIGN_LOOKAHEAD)
+        found = next((i for i in range(pointer, limit) if timeline[i][0] == word), None)
+        if found is None:
+            continue
+        if start is None:
+            start = timeline[found][1]
+        end = timeline[found][2]
+        pointer = found + 1
+    if start is None or end is None:
+        return None
+    return start, end, pointer
+
+
+def _interpolate_missing_times(
+    units: list[dict[str, Any]],
+    segments: list[dict[str, Any]],
+) -> None:
+    """Give rephrased lines a share of the free time between their neighbours."""
+    total_end = max((float(seg.get("end", 0.0) or 0.0) for seg in segments), default=0.0)
+    index = 0
+    while index < len(units):
+        if units[index]["start"] is not None:
+            index += 1
+            continue
+        run_end = index
+        while run_end < len(units) and units[run_end]["start"] is None:
+            run_end += 1
+        gap_start = units[index - 1]["end"] if index > 0 else 0.0
+        gap_end = units[run_end]["start"] if run_end < len(units) else total_end
+        gap_end = max(gap_start, gap_end)
+        weights = [max(len(units[i]["text"]), 1) for i in range(index, run_end)]
+        total_weight = sum(weights)
+        cursor = gap_start
+        for offset, unit_index in enumerate(range(index, run_end)):
+            share = (gap_end - gap_start) * weights[offset] / total_weight
+            units[unit_index]["start"] = cursor
+            units[unit_index]["end"] = cursor + share
+            cursor += share
+        index = run_end
+
+
+def build_sentence_units(
+    transcript: dict[str, Any] | None,
+    formatted_text: str,
+) -> list[dict[str, Any]]:
+    """Line up the lines of formatted.txt with the transcript timings.
+
+    Every line of the formatted text becomes one unit, so the transcript page,
+    the audio player and the translation work with the very same sentence list
+    and a hover always pairs equivalent sentences. Lines the formatter rephrased
+    get their times interpolated between their neighbours.
+    """
+    if not formatted_text.strip():
+        return []
+
+    segments = clean_transcript(transcript or {}).get("segments") or []
+    timeline = _word_timeline(segments)
+
+    units: list[dict[str, Any]] = []
+    pointer = 0
+    for paragraph_index, paragraph in enumerate(split_formatted_paragraphs(formatted_text)):
+        for line in paragraph:
+            matched = None
+            if timeline:
+                matched = _match_line([w.lower() for w in _WORD_RE.findall(line)], timeline, pointer)
+            if matched:
+                start, end, pointer = matched
+                units.append({"text": line, "start": start, "end": end, "paragraph": paragraph_index})
+            else:
+                units.append({"text": line, "start": None, "end": None, "paragraph": paragraph_index})
+
+    _interpolate_missing_times(units, segments)
+    for unit in units:
+        unit["start"] = round(float(unit["start"] or 0.0), 3)
+        unit["end"] = round(float(unit["end"] or 0.0), 3)
+    return units
 
 
 async def translate_sentences(

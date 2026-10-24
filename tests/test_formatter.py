@@ -1,5 +1,7 @@
 import asyncio
 
+import pytest
+
 from app.config import settings
 from app.services import formatter
 from conftest import FakeAsyncClient, FakeResponse
@@ -68,3 +70,52 @@ def test_long_lines_are_left_alone_without_a_key(monkeypatch):
     text = asyncio.run(formatter.format_transcript(transcript, api_key=None, use_groq=True))
 
     assert text == long_sentence
+
+
+SEGMENTED = {
+    "text": "hello world how are you. Mr. Smith left yesterday and came back later.",
+    "segments": [
+        {"id": 0, "start": 0.0, "end": 2.0, "text": "hello world"},
+        {"id": 1, "start": 2.0, "end": 4.0, "text": "how are you. Mr. Smith left yesterday"},
+        {"id": 2, "start": 4.0, "end": 6.0, "text": "and came back later."},
+    ],
+}
+
+
+def test_sentence_units_follow_the_lines_of_the_formatted_text():
+    """The player and the translation share the formatted lines, so pairs match."""
+    formatted = "hello world how are you.\nMr. Smith left yesterday and came back later."
+
+    units = formatter.build_sentence_units(SEGMENTED, formatted)
+
+    assert [unit["text"] for unit in units] == formatted.split("\n")
+    assert [unit["paragraph"] for unit in units] == [0, 0]
+    assert units[0]["start"] == 0.0
+    assert units[0]["end"] == pytest.approx(2.0 + (11 / 37) * 2, abs=0.002)
+    assert units[1]["start"] == pytest.approx(2.0 + (13 / 37) * 2, abs=0.002)
+    assert units[1]["end"] == pytest.approx(5.9, abs=0.002)
+
+
+def test_sentence_units_keep_paragraphs_and_interpolate_rephrased_lines():
+    transcript = {
+        "text": "one. two. three.",
+        "segments": [{"id": 0, "start": 0.0, "end": 3.0, "text": "one. two. three."}],
+    }
+    formatted = "one.\n\nSome totally new wording.\nthree."
+
+    units = formatter.build_sentence_units(transcript, formatted)
+
+    assert [unit["text"] for unit in units] == ["one.", "Some totally new wording.", "three."]
+    assert [unit["paragraph"] for unit in units] == [0, 1, 1]
+    assert units[0]["start"] == 0.0
+    # The rephrased line takes the free time between its neighbours.
+    assert units[1]["start"] == pytest.approx(0.5625, abs=0.002)
+    assert units[1]["end"] == pytest.approx(1.875, abs=0.002)
+    assert units[2]["end"] == pytest.approx(2.8125, abs=0.002)
+
+
+def test_sentence_units_without_a_transcript_get_no_timings():
+    units = formatter.build_sentence_units(None, "First line.\nSecond line.")
+
+    assert [unit["text"] for unit in units] == ["First line.", "Second line."]
+    assert [(unit["start"], unit["end"]) for unit in units] == [(0.0, 0.0), (0.0, 0.0)]

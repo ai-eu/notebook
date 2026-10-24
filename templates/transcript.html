@@ -47,9 +47,11 @@
             <div class="column original-column">
                 <div class="column-header">Оригинал</div>
                 <div class="sentences" id="original-sentences">
-                    {% for seg in transcript.get('segments', []) %}
-                    <div class="sentence" data-index="{{ loop.index0 }}" data-start="{{ seg.get('start', 0) }}" data-end="{{ seg.get('end', 0) }}">
-                        {{ seg.get('text', '') }}
+                    {% for paragraph in original_paragraphs %}
+                    <div class="transcript-paragraph">
+                        {% for unit in paragraph %}
+                        <p class="sentence sentence-line" data-index="{{ unit.index }}" data-idx="{{ unit.index }}" data-start="{{ '%.3f'|format(unit.start) }}" data-end="{{ '%.3f'|format(unit.end) }}">{{ unit.text }}</p>
+                        {% endfor %}
                     </div>
                     {% endfor %}
                 </div>
@@ -70,6 +72,7 @@
 window.RECORDING_ID = "{{ recording.recording_id }}";
 window.ORIGINAL_FILENAME = "{{ recording.original_filename | e }}";
 window.TRANSCRIPT = {{ transcript | tojson | safe }};
+window.SENTENCE_UNITS = {{ sentence_units | tojson | safe }};
 window.TXT_READY = {{ txt_ready | tojson }};
 window.TRANSLATION_ENABLED = {{ translation_enabled | tojson }};
 window.TRANSLATION_LANGUAGES = {{ translation_languages | tojson }};

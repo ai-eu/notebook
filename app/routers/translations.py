@@ -8,11 +8,48 @@ from app.auth import require_user
 from app.config import settings
 from app.database import get_db
 from app.models import Recording, User
-from app.services.formatter import LANGUAGE_NAMES, TranslationError, translate_sentences
+from app.services.formatter import (
+    LANGUAGE_NAMES,
+    TranslationError,
+    split_formatted_paragraphs,
+    translate_sentences,
+)
 from app.services.groq import resolve_groq_key
 from app.utils import resolve_recording_path
 
 router = APIRouter(prefix="/api/translate", tags=["translate"])
+
+
+def _paragraph_indexes(paragraphs: list[list[str]]) -> list[int]:
+    """Paragraph number of every sentence of the flattened list."""
+    return [index for index, paragraph in enumerate(paragraphs) for _ in paragraph]
+
+
+def _translation_payload(
+    recording_id: str,
+    lang: str,
+    sentences: list[str],
+    paragraphs: list[list[str]],
+    cached: bool,
+) -> dict:
+    return {
+        "recording_id": recording_id,
+        "language": lang,
+        "language_name": LANGUAGE_NAMES.get(lang, lang),
+        "sentences": sentences,
+        "paragraphs": _paragraph_indexes(paragraphs),
+        "cached": cached,
+    }
+
+
+def _join_paragraphs(sentences: list[str], paragraphs: list[list[str]]) -> str:
+    """Write translated sentences back with the paragraph breaks of the source."""
+    blocks: list[str] = []
+    offset = 0
+    for paragraph in paragraphs:
+        blocks.append("\n".join(sentences[offset : offset + len(paragraph)]))
+        offset += len(paragraph)
+    return "\n\n".join(blocks) + "\n"
 
 
 @router.get("")
@@ -71,22 +108,21 @@ async def get_translation(
 
     cache_path = folder / f"formatted-{lang}.txt"
 
-    if not refresh and cache_path.exists():
-        text = cache_path.read_text(encoding="utf-8")
-        sentences = [line for line in text.split("\n") if line.strip()]
-        return {
-            "recording_id": recording_id,
-            "language": lang,
-            "language_name": LANGUAGE_NAMES.get(lang, lang),
-            "sentences": sentences,
-            "cached": True,
-        }
-
-    # Read the formatted text and split into lines (sentences).
-    text = formatted_path.read_text(encoding="utf-8")
-    sentences = [line.strip() for line in text.split("\n") if line.strip()]
+    # The translation mirrors the lines of formatted.txt, which is also what the
+    # transcript page renders, so both columns stay 1:1 aligned.
+    paragraphs = split_formatted_paragraphs(formatted_path.read_text(encoding="utf-8"))
+    sentences = [line for paragraph in paragraphs for line in paragraph]
     if not sentences:
-        raise HTTPException(status_code=status.HTTP_404, detail="No sentences to translate")
+        raise HTTPException(status_code=404, detail="No sentences to translate")
+
+    if not refresh and cache_path.exists():
+        cached_paragraphs = split_formatted_paragraphs(cache_path.read_text(encoding="utf-8"))
+        cached_sentences = [line for paragraph in cached_paragraphs for line in paragraph]
+        # A cache built for a different sentence split would pair the wrong lines.
+        if len(cached_sentences) == len(sentences):
+            return _translation_payload(
+                recording_id, lang, cached_sentences, paragraphs, cached=True
+            )
 
     api_key = resolve_groq_key(user)
     if not api_key:
@@ -100,16 +136,9 @@ async def get_translation(
     except TranslationError as exc:
         raise HTTPException(status_code=502, detail=str(exc))
 
-    # Save to cache file.
-    cache_path.write_text("\n".join(translated) + "\n", encoding="utf-8")
+    cache_path.write_text(_join_paragraphs(translated, paragraphs), encoding="utf-8")
 
-    return {
-        "recording_id": recording_id,
-        "language": lang,
-        "language_name": LANGUAGE_NAMES.get(lang, lang),
-        "sentences": translated,
-        "cached": False,
-    }
+    return _translation_payload(recording_id, lang, translated, paragraphs, cached=False)
 
 
 @router.delete("/{recording_id}")

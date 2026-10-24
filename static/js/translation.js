@@ -162,18 +162,34 @@
             const data = await res.json();
             const sentences = data.sentences || [];
 
-            translatedSentences.innerHTML = sentences
-                .map(
-                    (text, idx) =>
-                        `<div class="sentence" data-index="${idx}">${escapeHtml(text)}</div>`
-                )
-                .join("");
+            translatedSentences.innerHTML = renderSentences(sentences, data.paragraphs);
 
             highlightPair(highlightedIndex);
         } catch (exc) {
             hint.textContent = "Не удалось загрузить перевод: " + String(exc);
             hint.classList.remove("hidden");
         }
+    }
+
+    // Translated sentences keep the paragraph structure of the original column,
+    // so the two columns stay visually aligned line by line.
+    function renderSentences(sentences, paragraphs) {
+        const paragraphOf = (idx) =>
+            Array.isArray(paragraphs) && Number.isInteger(paragraphs[idx]) ? paragraphs[idx] : 0;
+
+        let html = "";
+        let currentParagraph = -1;
+        sentences.forEach((text, idx) => {
+            const paragraph = paragraphOf(idx);
+            if (paragraph !== currentParagraph) {
+                if (currentParagraph !== -1) html += "</div>";
+                html += '<div class="transcript-paragraph">';
+                currentParagraph = paragraph;
+            }
+            html += `<div class="sentence" data-index="${idx}">${escapeHtml(text)}</div>`;
+        });
+        if (currentParagraph !== -1) html += "</div>";
+        return html;
     }
 
     function escapeHtml(text) {

@@ -63,6 +63,18 @@ const PARAGRAPH_GAP_SECONDS = 1.5;
 function renderTranscript(transcript) {
     const target = document.getElementById('original-sentences') || transcriptContainer;
 
+    // The server renders the column from formatted.txt and ships the very same
+    // sentence list here, so the player and the translation share the indexes.
+    const units = Array.isArray(window.SENTENCE_UNITS) ? window.SENTENCE_UNITS : [];
+    if (units.length) {
+        sentences = units.map((unit) => ({
+            text: unit.text,
+            start: Number(unit.start) || 0,
+            end: Number(unit.end) || 0,
+        }));
+        return;
+    }
+
     if (!transcript) {
         if (target === transcriptContainer) {
             target.innerHTML = '<p class="status-text">Transcript is still being processed...</p>';
@@ -126,7 +138,8 @@ function findActiveSentenceIndex(time) {
             return i;
         }
     }
-    if (time >= sentences[sentences.length - 1]?.end) {
+    const last = sentences[sentences.length - 1];
+    if (last && last.end > last.start && time >= last.end) {
         return sentences.length - 1;
     }
     return -1;
