@@ -1,10 +1,13 @@
 import asyncio
+import json
 import logging
 import re
+import textwrap
 from typing import Any
 
 import httpx
 from app.config import settings
+from app.services.http import post_with_retries
 
 MAX_LINE_LENGTH = 250
 PARAGRAPH_GAP_SECONDS = 1.5
@@ -69,6 +72,11 @@ _ABBREVIATIONS = sorted(
     reverse=True,
 )
 
+# All abbreviations in one alternation: one regex pass instead of one per entry.
+_ABBR_RE = re.compile(
+    r"(?<!\S)(?:" + "|".join(map(re.escape, _ABBREVIATIONS)) + r")(?!\S)"
+)
+
 # Splits into sentences: .!? (with ellipsis and closing quote),
 # then a space and the next word. Transcripts often have no capitals,
 # so a capital letter is not required.
@@ -125,14 +133,14 @@ def clean_transcript(transcript: dict[str, Any]) -> dict[str, Any]:
 
 
 def _protect_abbreviations(text: str) -> tuple[str, dict[str, str]]:
-    placeholders = {}
-    result = text
-    for i, abbr in enumerate(_ABBREVIATIONS):
-        key = f"___ABBR_{i}___"
-        placeholders[key] = abbr
-        pattern = re.escape(abbr)
-        result = re.sub(rf"(?<!\S){pattern}(?!\S)", key, result)
-    return result, placeholders
+    placeholders: dict[str, str] = {}
+
+    def _replace(match: re.Match[str]) -> str:
+        key = f"___ABBR_{len(placeholders)}___"
+        placeholders[key] = match.group(0)
+        return key
+
+    return _ABBR_RE.sub(_replace, text), placeholders
 
 
 def _restore_abbreviations(text: str, placeholders: dict[str, str]) -> str:
@@ -153,18 +161,36 @@ def _split_into_sentences(text: str) -> list[str]:
     ]
 
 
-def _split_by_punctuation(text: str) -> list[str]:
-    """Split a string by .!? without requiring a capital letter (for splitting LLM output)."""
+def _split_sentences_with_offsets(text: str) -> list[tuple[int, int, str]]:
+    """Split text into sentences and return their character ranges.
+
+    Abbreviation punctuation is masked (not replaced by a different-length
+    placeholder), so offsets stay valid for mapping sentences back to segments.
+    """
     if not text.strip():
         return []
-    protected, placeholders = _protect_abbreviations(text)
-    # Split by .!? + optional closing quote + space + next non-whitespace
-    marked = re.sub(r"([.!?]+[\"'»]?)\s+(?=\S)", r"\1\n", protected)
-    return [
-        _restore_abbreviations(s.strip(), placeholders)
-        for s in marked.split("\n")
-        if s.strip()
-    ]
+
+    masked = list(text)
+    for match in _ABBR_RE.finditer(text):
+        for index in range(match.start(), match.end()):
+            if masked[index] in ".!?":
+                masked[index] = "\x00"
+
+    boundaries = [0]
+    for match in _SENTENCE_RE.finditer("".join(masked)):
+        boundaries.append(match.end())
+    boundaries.append(len(text))
+
+    result: list[tuple[int, int, str]] = []
+    for start, end in zip(boundaries, boundaries[1:]):
+        raw = text[start:end]
+        stripped = raw.strip()
+        if not stripped:
+            continue
+        leading = len(raw) - len(raw.lstrip())
+        trailing = len(raw) - len(raw.rstrip())
+        result.append((start + leading, end - trailing, stripped))
+    return result
 
 
 def _split_by_clauses(text: str) -> list[str]:
@@ -224,35 +250,36 @@ def _estimate_max_tokens(text_len: int) -> int:
 
 
 async def _post_to_groq(payload: dict[str, Any], headers: dict[str, str], max_retries: int = 3) -> dict[str, Any] | None:
-    """POST with retries on 429 and logging of HTTP errors."""
-    async with httpx.AsyncClient(timeout=30.0) as client:
-        for attempt in range(max_retries):
-            response = await client.post(GROQ_CHAT_URL, json=payload, headers=headers)
+    """POST with retries on 429/5xx/network errors.
 
-            if response.status_code == 429:
-                body = response.text[:500]
-                retry_after = response.headers.get("retry-after") or response.headers.get("Retry-After")
-                try:
-                    wait = float(retry_after) if retry_after else 2 ** attempt
-                except ValueError:
-                    wait = 2 ** attempt
-                logging.warning("Groq rate limit (attempt %d): %s; retry in %.1fs", attempt + 1, body, wait)
-                await asyncio.sleep(wait)
-                continue
+    Returns None instead of raising: formatting is an optional enhancement and must
+    never fail the whole transcription job.
+    """
+    try:
+        response = await post_with_retries(
+            GROQ_CHAT_URL,
+            json=payload,
+            headers=headers,
+            timeout=30.0,
+            max_retries=max_retries,
+        )
+    except httpx.HTTPError as exc:
+        logging.warning("Groq request failed: %s", exc)
+        return None
 
-            if response.status_code in (401, 403):
-                logging.warning("Groq rejected the API key (HTTP %s)", response.status_code)
-                return None
+    if response.status_code in (401, 403):
+        logging.warning("Groq rejected the API key (HTTP %s)", response.status_code)
+        return None
 
-            if response.status_code >= 400:
-                body = response.text[:500]
-                logging.warning("Groq HTTP %s: %s", response.status_code, body)
-                return None
+    if response.status_code >= 400:
+        logging.warning("Groq HTTP %s: %s", response.status_code, response.text[:500])
+        return None
 
-            return response.json()
-
-    logging.warning("Groq rate limit retries exhausted")
-    return None
+    try:
+        return response.json()
+    except ValueError:
+        logging.warning("Groq returned a non-JSON response: %s", response.text[:200])
+        return None
 
 
 async def _split_long_sentence_with_groq(
@@ -289,7 +316,7 @@ async def _split_long_sentence_with_groq(
         # The model may put multiple sentences in one line — split by punctuation.
         split_lines: list[str] = []
         for line in lines:
-            split_lines.extend(_split_by_punctuation(line))
+            split_lines.extend(_split_into_sentences(line))
 
         # If long lines remain after periods/questions/exclamations, try ,;:
         final_lines: list[str] = []
@@ -317,74 +344,180 @@ async def _split_long_sentence_with_groq(
     return None
 
 
-async def _reformat_long_lines(
-    text: str,
-    api_key: str | None = None,
-    use_groq: bool = False,
-    max_len: int = MAX_LINE_LENGTH,
-) -> str:
-    """Split long lines locally by punctuation.
-    If a clause is still longer than max_len, send it to Groq.
-    Without Groq, long meaningful clauses are left unchanged (we do not wrap by spaces)."""
-    if not text:
-        return text
-    lines = text.split("\n")
-    result: list[str] = []
-    for line in lines:
-        if not line or len(line) <= max_len:
-            result.append(line)
-            continue
-        clauses = _split_by_clauses(line)
-        if not clauses:
-            result.append(line)
-            continue
-        for clause in clauses:
-            if len(clause) <= max_len:
-                result.append(clause)
-            elif use_groq and api_key:
-                groq_lines = await _split_long_sentence_with_groq(clause, api_key, max_len)
-                if groq_lines:
-                    result.extend(groq_lines)
-                else:
-                    result.append(clause)
-            else:
-                result.append(clause)
-    return "\n".join(result)
-
-
-def _format_text(text: str) -> str:
-    """Formatting when there are no segments — work with a single text."""
-    text = " ".join(text.split())
-    return "\n".join(_split_into_sentences(text))
-
-
-def _build_paragraphs(segments: list[dict[str, Any]]) -> list[str]:
-    paragraphs = []
-    current = []
-    prev_end = None
+def _iter_paragraph_segments(
+    segments: list[dict[str, Any]],
+) -> list[list[tuple[str, float, float, Any]]]:
+    """Group segments into paragraphs by pause, keeping their timings."""
+    paragraphs: list[list[tuple[str, float, float, Any]]] = []
+    current: list[tuple[str, float, float, Any]] = []
+    prev_end: float | None = None
 
     for seg in segments:
-        raw_text = seg.get("text") or ""
-        text = " ".join(raw_text.split())
+        text = " ".join((seg.get("text") or "").split())
         if not text:
             continue
-
-        start = float(seg.get("start", 0))
-        end = float(seg.get("end", start))
-
+        start = float(seg.get("start", 0.0) or 0.0)
+        end = float(seg.get("end", start) or start)
+        if end < start:
+            end = start
         if prev_end is not None and start - prev_end > PARAGRAPH_GAP_SECONDS:
             if current:
-                paragraphs.append(" ".join(current))
-            current = [text]
-        else:
-            current.append(text)
-
+                paragraphs.append(current)
+            current = []
+        current.append((text, start, end, seg.get("id")))
         prev_end = end
 
     if current:
-        paragraphs.append(" ".join(current))
-
+        paragraphs.append(current)
     return paragraphs
+
+
+def _interpolate_span(
+    span: tuple[int, int, float, float, Any],
+    position: int,
+) -> float:
+    text_start, text_end, seg_start, seg_end, _ = span
+    if text_end <= text_start:
+        return seg_start
+    position = min(max(position, text_start), text_end)
+    ratio = (position - text_start) / (text_end - text_start)
+    return seg_start + ratio * (seg_end - seg_start)
+
+
+def build_sentence_document(transcript: dict[str, Any]) -> dict[str, Any]:
+    """Turn cleaned Whisper segments into canonical sentence units with exact timings.
+
+    The result is the single source of truth for the page, the player and translation.
+    It is O(n) in the transcript size and does not search for words afterwards.
+    """
+    segments = transcript.get("segments") or []
+    duration = float(transcript.get("duration") or 0.0)
+    if not duration and segments:
+        duration = max(float(seg.get("end", 0.0) or 0.0) for seg in segments)
+
+    sentences: list[dict[str, Any]] = []
+    if not segments:
+        text = " ".join((transcript.get("text") or "").split())
+        for _, _, sentence in _split_sentences_with_offsets(text):
+            sentences.append(
+                {
+                    "text": sentence,
+                    "start": 0.0,
+                    "end": 0.0,
+                    "paragraph": 0,
+                    "segment_ids": [],
+                }
+            )
+        return {"version": 1, "duration": round(duration, 3), "sentences": sentences}
+
+    for paragraph_index, paragraph in enumerate(_iter_paragraph_segments(segments)):
+        parts: list[str] = []
+        spans: list[tuple[int, int, float, float, Any]] = []
+        cursor = 0
+        for text, start, end, seg_id in paragraph:
+            if parts:
+                cursor += 1  # the space inserted by " ".join
+            text_start = cursor
+            cursor += len(text)
+            parts.append(text)
+            spans.append((text_start, cursor, start, end, seg_id))
+
+        paragraph_text = " ".join(parts)
+        for start_char, end_char, sentence in _split_sentences_with_offsets(paragraph_text):
+            overlapping = [
+                span for span in spans
+                if span[0] < end_char and span[1] > start_char
+            ]
+            if overlapping:
+                start_time = _interpolate_span(overlapping[0], max(start_char, overlapping[0][0]))
+                end_time = _interpolate_span(overlapping[-1], min(end_char, overlapping[-1][1]))
+                segment_ids = [span[4] for span in overlapping]
+            else:
+                start_time = end_time = 0.0
+                segment_ids = []
+
+            sentences.append(
+                {
+                    "text": sentence,
+                    "start": round(start_time, 3),
+                    "end": round(max(start_time, end_time), 3),
+                    "paragraph": paragraph_index,
+                    "segment_ids": segment_ids,
+                }
+            )
+
+    return {"version": 1, "duration": round(duration, 3), "sentences": sentences}
+
+
+def render_formatted(document: dict[str, Any], *, max_line_length: int | None = None) -> str:
+    """Render a sentence document as TXT.
+
+    ``max_line_length`` is an export/display concern: long sentences are wrapped
+    at word boundaries. The canonical sentences themselves are never split by
+    commas, so translation and highlighting keep whole sentences.
+    """
+    by_paragraph: dict[int, list[str]] = {}
+    for unit in document.get("sentences", []):
+        text = str(unit.get("text") or "").strip()
+        if not text:
+            continue
+        by_paragraph.setdefault(int(unit.get("paragraph", 0)), []).append(text)
+
+    blocks: list[str] = []
+    for paragraph_index in sorted(by_paragraph):
+        lines: list[str] = []
+        for text in by_paragraph[paragraph_index]:
+            if max_line_length and len(text) > max_line_length:
+                lines.extend(
+                    textwrap.wrap(
+                        text,
+                        width=max_line_length,
+                        break_long_words=False,
+                        break_on_hyphens=False,
+                    )
+                    or [text]
+                )
+            else:
+                lines.append(text)
+        blocks.append("\n".join(lines))
+    return "\n\n".join(blocks)
+
+
+async def smart_format_document(
+    document: dict[str, Any],
+    api_key: str,
+) -> dict[str, Any]:
+    """Split only sentences longer than the export limit, preserving word content."""
+    formatted: list[dict[str, Any]] = []
+    for unit in document.get("sentences", []):
+        text = str(unit.get("text") or "")
+        if len(text) <= MAX_LINE_LENGTH:
+            formatted.append(unit)
+            continue
+
+        lines = await _split_long_sentence_with_groq(text, api_key)
+        if not lines:
+            formatted.append(unit)
+            continue
+
+        lengths = [max(len(line), 1) for line in lines]
+        total = sum(lengths) or 1
+        start = float(unit.get("start") or 0.0)
+        end = float(unit.get("end") or start)
+        cursor = start
+        for line, length in zip(lines, lengths):
+            share = (end - start) * length / total
+            formatted.append(
+                {
+                    **unit,
+                    "text": line,
+                    "start": round(cursor, 3),
+                    "end": round(cursor + share, 3),
+                }
+            )
+            cursor += share
+
+    return {**document, "sentences": formatted}
 
 
 async def format_transcript(
@@ -392,29 +525,15 @@ async def format_transcript(
     api_key: str | None = None,
     use_groq: bool = False,
 ) -> str:
-    """Format the transcript: paragraphs by pauses, sentences by .!?,
-    and very long lines are additionally split locally or via Groq."""
+    """Build the canonical sentence document and render it as TXT."""
     transcript = clean_transcript(transcript)
     if use_groq and not api_key:
         logging.warning("Smart formatting is enabled, but the user has no Groq API key — smart splitting will not be used.")
 
-    segments = transcript.get("segments") or []
-    if not segments:
-        text = _format_text(transcript.get("text", ""))
-        return await _reformat_long_lines(text, api_key, use_groq=use_groq)
-
-    paragraphs = _build_paragraphs(segments)
-    formatted: list[str] = []
-
-    for para in paragraphs:
-        sentences = _split_into_sentences(para)
-        formatted.append("\n".join(sentences) if sentences else "")
-
-    return await _reformat_long_lines(
-        "\n\n".join(p for p in formatted if p).strip(),
-        api_key,
-        use_groq=use_groq,
-    )
+    document = build_sentence_document(transcript)
+    if use_groq and api_key:
+        document = await smart_format_document(document, api_key)
+    return render_formatted(document)
 
 
 def split_formatted_paragraphs(formatted_text: str) -> list[list[str]]:
@@ -555,64 +674,102 @@ def build_sentence_units(
     return units
 
 
-async def translate_sentences(
-    sentences: list[str],
-    target_lang: str,
-    api_key: str | None,
-    batch_size: int | None = None,
-) -> list[str]:
-    """Translate a list of sentences into the target language via Groq Chat API.
+def _translation_batches(
+    sentences: list[str], batch_size: int | None
+) -> list[list[str]]:
+    if batch_size:
+        return [
+            sentences[start : start + batch_size]
+            for start in range(0, len(sentences), batch_size)
+        ]
 
-    Sentences are sent in batches (each batch = one request) so the model preserves
-    the order and each output line corresponds 1:1 to an input line.
-    """
-    if not api_key:
-        raise TranslationError("No API key available for translation")
+    batches: list[list[str]] = []
+    current: list[str] = []
+    chars = 0
+    for sentence in sentences:
+        if current and chars + len(sentence) + 2 > settings.translation_batch_chars:
+            batches.append(current)
+            current = []
+            chars = 0
+        current.append(sentence)
+        chars += len(sentence) + 2
+    if current:
+        batches.append(current)
+    return batches
 
-    if not sentences:
-        return []
 
-    batch_size = batch_size or settings.translation_batch_size
-    target_name = LANGUAGE_NAMES.get(target_lang, target_lang)
-
-    results: list[str] = []
-    for start in range(0, len(sentences), batch_size):
-        batch = sentences[start : start + batch_size]
-        batch_text = "\n".join(f"{i + 1}. {s}" for i, s in enumerate(batch))
-
-        prompt = (
-            "You are a professional translator. Translate the following numbered "
-            f"sentences into {target_name} ({target_lang}).\n"
-            "Rules:\n"
-            "1. Return exactly one translation per input line.\n"
-            "2. Keep the same line order — line N of the output must translate line N of the input.\n"
-            "3. Do not add, remove, or merge sentences.\n"
-            "4. Do not include the numbering in the output.\n"
-            "5. Do not add any commentary, explanations, or extra text.\n"
-            "6. Preserve names, numbers, and proper nouns as-is.\n"
-            f"7. Translate naturally into {target_name}.\n\n"
-            "Input:\n"
-            f"{batch_text}\n\n"
-            "Output:\n"
-        )
-
-        payload = {
-            "model": settings.groq_chat_model,
-            "messages": [
-                {"role": "system", "content": "You are a helpful translator."},
-                {"role": "user", "content": prompt},
-            ],
-            "temperature": 0.3,
-            "max_tokens": max(300, len(batch_text) // 3 + 200),
-        }
-        headers = {
-            "Authorization": f"Bearer {api_key}",
-            "Content-Type": "application/json",
-        }
-
+def _parse_translation_content(content: str, expected: int) -> list[str]:
+    """Prefer the requested JSON array, but accept plain lines from older models."""
+    stripped = content.strip()
+    if stripped.startswith(("{", "[")):
         try:
-            async with httpx.AsyncClient(timeout=60.0) as client:
-                response = await client.post(GROQ_CHAT_URL, json=payload, headers=headers)
+            data = json.loads(stripped)
+            if isinstance(data, dict):
+                data = data.get("translations")
+            if isinstance(data, list):
+                return [str(item).strip() for item in data]
+        except (TypeError, ValueError):
+            pass
+
+    translated: list[str] = []
+    for line in content.splitlines():
+        value = line.strip()
+        if not value:
+            continue
+        value = re.sub(r"^\d+\.\s*", "", value)
+        value = re.sub(r"^[-•]\s*", "", value)
+        translated.append(value)
+    return translated
+
+
+async def _translate_batch(
+    batch: list[str],
+    target_lang: str,
+    target_name: str,
+    api_key: str,
+) -> list[str]:
+    batch_text = "\n".join(f"{i + 1}. {s}" for i, s in enumerate(batch))
+    prompt = (
+        "You are a professional translator. Translate the following numbered "
+        f"sentences into {target_name} ({target_lang}).\n"
+        "Rules:\n"
+        "1. Return exactly one translation per input line.\n"
+        "2. Keep the same line order — line N of the output must translate line N of the input.\n"
+        "3. Do not add, remove, or merge sentences.\n"
+        "4. Do not include the numbering in the output.\n"
+        "5. Do not add any commentary, explanations, or extra text.\n"
+        "6. Preserve names, numbers, and proper nouns as-is.\n"
+        f"7. Translate naturally into {target_name}.\n\n"
+        f"Return a JSON object with one key, \"translations\", containing exactly "
+        f"{len(batch)} strings in the same order.\n\n"
+        "Input:\n"
+        f"{batch_text}\n\n"
+        "Output:\n"
+    )
+
+    payload = {
+        "model": settings.groq_chat_model,
+        "messages": [
+            {"role": "system", "content": "You are a helpful translator."},
+            {"role": "user", "content": prompt},
+        ],
+        "temperature": 0.3,
+        "max_tokens": max(400, len(batch_text) // 2 + 300),
+    }
+    headers = {
+        "Authorization": f"Bearer {api_key}",
+        "Content-Type": "application/json",
+    }
+
+    translated: list[str] = []
+    for attempt in range(2):
+        try:
+            response = await post_with_retries(
+                GROQ_CHAT_URL,
+                json=payload,
+                headers=headers,
+                timeout=60.0,
+            )
         except httpx.HTTPError as exc:
             raise TranslationError(f"Translation request failed: {exc}") from exc
 
@@ -623,23 +780,47 @@ async def translate_sentences(
         if response.status_code >= 400:
             raise TranslationError(f"Groq API error {response.status_code}: {response.text[:200]}")
 
-        data = response.json()
-        content = data["choices"][0]["message"]["content"]
+        try:
+            data = response.json()
+            content = data["choices"][0]["message"]["content"]
+        except (KeyError, TypeError, ValueError) as exc:
+            raise TranslationError(f"Unexpected Groq response: {exc}") from exc
 
-        # Parse output lines, stripping any accidental numbering or list markers.
-        translated: list[str] = []
-        for line in content.splitlines():
-            stripped = line.strip()
-            if not stripped:
-                continue
-            stripped = re.sub(r"^\d+\.\s*", "", stripped)
-            stripped = re.sub(r"^[-•]\s*", "", stripped)
-            translated.append(stripped)
+        translated = _parse_translation_content(content, len(batch))
+        if len(translated) == len(batch):
+            return translated
+        logging.warning(
+            "Translation batch returned %d lines for %d sentences (attempt %d)",
+            len(translated),
+            len(batch),
+            attempt + 1,
+        )
 
-        # If the model returned fewer lines than requested, pad with empty strings
-        # so the 1:1 alignment with input sentences is preserved.
-        if len(translated) < len(batch):
-            translated.extend([""] * (len(batch) - len(translated)))
-        results.extend(translated[: len(batch)])
+    raise TranslationError(
+        f"Translation returned {len(translated)} lines for {len(batch)} sentences"
+    )
 
-    return results
+
+async def translate_sentences(
+    sentences: list[str],
+    target_lang: str,
+    api_key: str | None,
+    batch_size: int | None = None,
+) -> list[str]:
+    """Translate sentences in parallel character-budgeted batches."""
+    if not api_key:
+        raise TranslationError("No API key available for translation")
+
+    if not sentences:
+        return []
+
+    target_name = LANGUAGE_NAMES.get(target_lang, target_lang)
+    batches = _translation_batches(sentences, batch_size)
+    semaphore = asyncio.Semaphore(max(1, settings.translation_concurrency))
+
+    async def run(batch: list[str]) -> list[str]:
+        async with semaphore:
+            return await _translate_batch(batch, target_lang, target_name, api_key)
+
+    translated_batches = await asyncio.gather(*(run(batch) for batch in batches))
+    return [line for batch in translated_batches for line in batch]

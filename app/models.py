@@ -1,5 +1,16 @@
 from datetime import datetime, timezone
-from sqlalchemy import Column, Integer, String, DateTime, Float, Text, Boolean, ForeignKey, UniqueConstraint
+from sqlalchemy import (
+    Boolean,
+    Column,
+    DateTime,
+    Float,
+    ForeignKey,
+    Index,
+    Integer,
+    String,
+    Text,
+    UniqueConstraint,
+)
 from sqlalchemy.orm import relationship
 from app.database import Base
 
@@ -62,6 +73,14 @@ class Recording(Base):
     comment = Column(Text, nullable=True)
     created_at = Column(DateTime, default=now_utc)
     updated_at = Column(DateTime, default=now_utc, onupdate=now_utc)
+    # Crash recovery: how many times processing was started, and when the archive
+    # was last verified. Local files are only deleted after a verified archive.
+    attempts = Column(Integer, default=0, nullable=False)
+    archive_verified_at = Column(DateTime, nullable=True)
+
+    __table_args__ = (
+        Index("ix_recordings_user_created", "user_id", "created_at"),
+    )
 
     user = relationship("User", back_populates="recordings")
     files = relationship(
@@ -69,6 +88,11 @@ class Recording(Base):
         back_populates="recording",
         cascade="all, delete-orphan",
         order_by="StoredFile.idx",
+    )
+    artifacts = relationship(
+        "RecordingArtifact",
+        back_populates="recording",
+        cascade="all, delete-orphan",
     )
 
 
@@ -84,7 +108,7 @@ class StoredFile(Base):
         nullable=False,
         index=True,
     )
-    kind = Column(String(20), nullable=False)  # audio / transcript / formatted
+    kind = Column(String(48), nullable=False)  # audio / transcript / formatted / translation:xx
     idx = Column(Integer, default=0)  # chunk index for audio
     local_path = Column(String(500), nullable=True)
     size_bytes = Column(Integer, nullable=True)
@@ -98,6 +122,51 @@ class StoredFile(Base):
     recording = relationship("Recording", back_populates="files")
 
     __table_args__ = (UniqueConstraint("recording_id", "kind", "idx", name="uq_stored_file"),)
+
+
+class RecordingArtifact(Base):
+    """Text artifacts of a recording: transcript, sentences, formatted text, translations.
+
+    SQLite is the canonical store for text; Telegram keeps a backup copy. Keeping
+    these in a separate table means the recordings list never loads large blobs.
+    """
+
+    __tablename__ = "recording_artifacts"
+
+    id = Column(Integer, primary_key=True)
+    recording_id = Column(
+        String(64),
+        ForeignKey("recordings.recording_id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    kind = Column(String(48), nullable=False)
+    content = Column(Text, nullable=False)
+    sha256 = Column(String(64), nullable=False)
+    version = Column(Integer, default=1, nullable=False)
+    updated_at = Column(DateTime, default=now_utc, onupdate=now_utc)
+
+    recording = relationship("Recording", back_populates="artifacts")
+
+    __table_args__ = (
+        UniqueConstraint("recording_id", "kind", name="uq_recording_artifact"),
+    )
+
+
+class RemoteCleanup(Base):
+    """Message ids that must be deleted from the channel after a recording is gone."""
+
+    __tablename__ = "remote_cleanup"
+
+    id = Column(Integer, primary_key=True)
+    recording_id = Column(String(64), nullable=False, index=True)
+    chat_id = Column(String(64), nullable=True)
+    message_id = Column(Integer, nullable=False)
+    sent_at = Column(DateTime, nullable=True)
+    attempts = Column(Integer, default=0, nullable=False)
+    status = Column(String(16), default="pending", nullable=False, index=True)
+    last_error = Column(Text, nullable=True)
+    created_at = Column(DateTime, default=now_utc)
 
 
 class DeviceInvite(Base):

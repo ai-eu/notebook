@@ -12,8 +12,9 @@ FastAPI web app for drag-and-drop audio/video upload, automatic MP3 conversion, 
 - Supports audio/video formats including Apple files: `.mp3`, `.wav`, `.ogg`, `.flac`, `.m4a`, `.aac`, `.caf`, `.aif`, `.aiff`, `.wma`, `.amr`, `.3gp`, `.webm`, `.mp4`, `.mov`, `.mkv`.
 - SQLite database with relative recording folder paths (`<user_id>/<recording_id>`) so the `data/` directory and database can be moved between servers.
 - Sign-in with a personal Groq API key: the key is stored with the account and used for that user's transcriptions, so everyone runs on their own quota.
-- Optional Telegram archive: finished recordings are copied into a private channel and pulled back on demand, so the server does not have to keep every lecture forever. Users of the app do not need a Telegram account.
-- Optional Groq-powered TXT formatting (`SMART_FORMAT`) for splitting long lines.
+- **Telegram-first storage:** the audio and original uploads live in a private channel; transcripts, sentence timings and translations live in SQLite. Local files survive for `LOCAL_RETENTION_DAYS` (7 by default) after a verified archive, then only the LRU audio cache remains. Users of the app do not need a Telegram account.
+- **Canonical sentence document:** the page, player and translation all read the same `sentences` artifact from SQLite. No fuzzy word matching or re-splitting on every page load.
+- Optional Groq-powered TXT formatting (`SMART_FORMAT`) for very long sentences; it is applied once during processing, not on download.
 - Light and dark theme: follows the system theme, switched manually from the upload page.
 
 ## Requirements
@@ -101,37 +102,52 @@ TELEGRAM_CHAT_ID=-1001234567890
 Commands:
 
 ```bash
-python -m app.cli tg-status                    # configuration and counters
-python -m app.cli tg-backfill                  # upload recordings that are not archived yet
-python -m app.cli tg-backfill --limit 5
-python -m app.cli tg-verify                    # check the archive, refresh expired file ids
-python -m app.cli tg-restore <recording_id>    # download a recording back to the server
-python -m app.cli tg-cleanup --dry-run         # show what the retention would drop
+python -m app.cli storage-status                 # configuration, counters, retention
+python -m app.cli storage-backfill --dry-run     # what would be imported/uploaded/evicted
+python -m app.cli storage-backfill               # backfill + verify + evict local files
+python -m app.cli storage-backfill --limit 5
+python -m app.cli storage-backfill --no-evict    # upload but keep local copies
+python -m app.cli storage-verify                 # check archive, refresh expired file ids
+python -m app.cli storage-restore <recording_id> # download audio back to the server
+python -m app.cli storage-orphans                # messages Telegram refused to delete
+python -m app.cli storage-orphans --retry
 ```
+
+The old `tg-*` commands are still available as aliases.
 
 How it works:
 
 - A finished recording is copied into the channel right after its transcript is saved.
   The user sees the transcript immediately: the upload runs in the background and a
-  failed upload never turns a good transcription into an error. The app also catches up
-  on missed uploads every few hours and on start.
+  failed upload never turns a good transcription into an error. Maintenance catches up
+  every few hours.
 - The audio is uploaded in parts of `TELEGRAM_CHUNK_MB` (19 MB by default), because
   Telegram hands back at most 20 MiB per `getFile`. Parts are stored with their index, so
   they can be glued back together byte for byte.
-- Every message carries a caption with the recording id, the part number and the sha256 of
-  the file, so the channel stays readable even if `app.db` is lost. The database keeps the
-  `file_id` of every part; if Telegram expires a `file_id`, the stored message id is used
-  to mint a fresh one. Downloads are checked against the recorded size and sha256.
-- `AUDIO_RETENTION_DAYS` days after a recording is archived, its local audio is dropped
-  and the recording is played from the archive: the audio is downloaded into the cache
-  (`CACHE_DIR`, capped by `CACHE_MAX_MB`) on the first listen, and the player says so
-  while it happens. Set the retention to `0` to keep every local file.
-- Transcripts, TXT files and the database always stay on the server; they are only backed
-  up into the channel.
-- `tg-restore` marks a recording with `keep_local`, so the cleanup leaves that copy alone.
-- Deleting a recording in the app deletes its messages in the channel too.
+- Text artifacts (`transcript`, `sentences`, `formatted`, translations) are stored in
+  SQLite and uploaded from memory. The channel is their backup, not the source of truth
+  for page rendering.
+- Every message carries a caption with the recording id, user id, artifact version, part
+  number, size and sha256, so the channel stays readable even if `app.db` is lost. The
+  database keeps the `file_id` of every part; if Telegram expires a `file_id`, the
+  stored message id is used to mint a fresh one. Downloads are checked against the
+  recorded size and sha256.
+- `LOCAL_RETENTION_DAYS` (7 by default) days after a verified archive, local audio,
+  chunks and legacy text files are deleted. The page still works from SQLite; the player
+  downloads the audio into `CACHE_DIR` (capped by `CACHE_MAX_MB`) on the first listen.
+  `0` evicts immediately, `-1` keeps local files forever.
+- `storage-restore` marks a recording with `keep_local`, so cleanup leaves that copy alone.
+- Deleting a recording deletes its messages in the channel too. Telegram's Bot API
+  refuses to delete old messages (documented limit: 48 hours); such messages are moved
+  to `storage-orphans` for manual cleanup instead of being silently lost.
 - Uploads are throttled (`TELEGRAM_SEND_INTERVAL_SECONDS`), because a channel accepts
-  roughly 20 messages per minute. Archive a large backlog with `tg-backfill`.
+  roughly 20 messages per minute. Archive a large backlog with `storage-backfill`.
+
+> **Backup warning:** Telegram is not a guaranteed backup service. Keep regular copies
+> of `app.db` and export important recordings; a lost channel or bot is not recoverable
+> from the application alone.
+
+See [docs/STORAGE.md](docs/STORAGE.md) for the full storage model and recovery notes.
 
 ## Users and keys
 
@@ -151,16 +167,20 @@ history of an existing one.
 ## Data structure
 
 ```
+app.db                        # canonical metadata + text artifacts + translations
 data/
-  ├── .cache/                 # audio pulled back from the channel (safe to delete)
+  ├── .cache/                 # LRU audio pulled back from the channel (safe to delete)
   └── <user_id>/
-        └── <recording_id>/
-              ├── audio.mp3          # dropped after AUDIO_RETENTION_DAYS once archived
-              ├── transcript.json    # always kept on the server
-              └── formatted.txt      # always kept on the server
+        └── <recording_id>/   # only during processing and LOCAL_RETENTION_DAYS
+              ├── original.tmp   # until conversion/transcription succeeds
+              ├── audio.mp3      # until the verified archive + retention window
+              ├── chunks/        # only during transcription, deleted afterwards
+              └── legacy text    # imported into SQLite, then deleted
 ```
 
-Each upload gets its own folder with the recording timestamp in the name.
+Each upload gets its own folder with the recording timestamp in the name. After eviction
+the folder is removed; the recording, page and translations continue to work from
+`app.db`, and the audio is fetched into `data/.cache` on demand.
 
 ## Deployment on Debian VPS
 
@@ -184,7 +204,8 @@ sudo chown -R www-data:www-data /opt/apps/notebook
 ```bash
 cd /opt/apps/notebook
 sudo -u www-data cp .env.example .env
-# edit .env: SESSION_COOKIE_SECURE=true, TRUST_PROXY_HEADERS=true (the app runs behind nginx)
+# edit .env: SESSION_COOKIE_SECURE=true, TRUST_PROXY_HEADERS=true (behind nginx),
+# LOCAL_RETENTION_DAYS=7, TELEGRAM_ENABLED=true
 
 sudo -u www-data python3.11 -m venv venv
 sudo -u www-data venv/bin/pip install -r requirements.txt

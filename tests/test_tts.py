@@ -159,7 +159,9 @@ def test_process_tts_full_pipeline(monkeypatch, tmp_path):
         assert ends == [round(2.5 * (i + 1), 3) for i in range(len(ends))]
         assert " ".join(s["text"] for s in transcript["segments"]).split() == TEXT.split()
 
-        assert (folder / "formatted.txt").read_text(encoding="utf-8") == TEXT
+        formatted = (folder / "formatted.txt").read_text(encoding="utf-8")
+        assert formatted.split() == TEXT.split()
+        assert len(formatted.splitlines()) > 1
         # Inputs are cleaned up, only the deliverables stay.
         assert not (folder / "original.tmp").exists()
         assert not (folder / "chunks").exists()

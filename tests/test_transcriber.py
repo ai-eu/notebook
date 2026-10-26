@@ -3,7 +3,7 @@ import asyncio
 import pytest
 
 from app.config import settings
-from app.services import transcriber
+from app.services import http as http_service, transcriber
 from app.services.groq import GroqAuthError
 from conftest import FakeAsyncClient, FakeResponse
 
@@ -20,7 +20,7 @@ def mp3_file(tmp_path):
 def test_sends_the_callers_key_to_groq(monkeypatch, mp3_file):
     monkeypatch.setattr(settings, "mock_transcription", False)
     fake = FakeAsyncClient(FakeResponse(200, {"text": "hello", "segments": []}))
-    monkeypatch.setattr(transcriber.httpx, "AsyncClient", lambda **kwargs: fake)
+    monkeypatch.setattr(http_service.httpx, "AsyncClient", lambda **kwargs: fake)
 
     result = asyncio.run(transcriber.transcribe_file(mp3_file, KEY))
 
@@ -32,7 +32,7 @@ def test_sends_the_callers_key_to_groq(monkeypatch, mp3_file):
 def test_chunks_reuse_the_same_key(monkeypatch, mp3_file):
     monkeypatch.setattr(settings, "mock_transcription", False)
     fake = FakeAsyncClient(FakeResponse(200, {"text": "hi", "segments": [], "duration": 1.0}))
-    monkeypatch.setattr(transcriber.httpx, "AsyncClient", lambda **kwargs: fake)
+    monkeypatch.setattr(http_service.httpx, "AsyncClient", lambda **kwargs: fake)
 
     result = asyncio.run(transcriber.transcribe_chunks([mp3_file, mp3_file], KEY))
 
@@ -41,10 +41,34 @@ def test_chunks_reuse_the_same_key(monkeypatch, mp3_file):
     assert result["text"] == "hi hi"
 
 
+def test_chunks_respect_the_concurrency_limit(monkeypatch, mp3_file):
+    monkeypatch.setattr(settings, "mock_transcription", False)
+    monkeypatch.setattr(settings, "transcription_concurrency", 2)
+    active = 0
+    peak = 0
+
+    async def fake_transcribe(path, api_key, language=None):
+        nonlocal active, peak
+        active += 1
+        peak = max(peak, active)
+        await asyncio.sleep(0.02)
+        active -= 1
+        return {"text": "hi", "segments": [], "duration": 1.0}
+
+    monkeypatch.setattr(transcriber, "transcribe_file", fake_transcribe)
+
+    result = asyncio.run(
+        transcriber.transcribe_chunks([mp3_file] * 5, KEY)
+    )
+
+    assert peak == 2
+    assert result["text"] == "hi hi hi hi hi"
+
+
 def test_rejected_key_raises_an_auth_error(monkeypatch, mp3_file):
     monkeypatch.setattr(settings, "mock_transcription", False)
     monkeypatch.setattr(
-        transcriber.httpx,
+        http_service.httpx,
         "AsyncClient",
         lambda **kwargs: FakeAsyncClient(FakeResponse(401, {"error": "Invalid API Key"})),
     )
@@ -56,7 +80,7 @@ def test_rejected_key_raises_an_auth_error(monkeypatch, mp3_file):
 def test_other_errors_stay_plain_value_errors(monkeypatch, mp3_file):
     monkeypatch.setattr(settings, "mock_transcription", False)
     monkeypatch.setattr(
-        transcriber.httpx,
+        http_service.httpx,
         "AsyncClient",
         lambda **kwargs: FakeAsyncClient(FakeResponse(500, {"error": "boom"})),
     )
@@ -68,7 +92,7 @@ def test_other_errors_stay_plain_value_errors(monkeypatch, mp3_file):
 def test_a_missing_key_fails_before_calling_groq(monkeypatch, mp3_file):
     monkeypatch.setattr(settings, "mock_transcription", False)
     monkeypatch.setattr(
-        transcriber.httpx,
+        http_service.httpx,
         "AsyncClient",
         lambda **kwargs: pytest.fail("Groq must not be called without a key"),
     )
@@ -85,7 +109,7 @@ def test_mock_mode_never_calls_groq(monkeypatch, mp3_file):
 
     monkeypatch.setattr(transcriber, "get_duration", fake_duration)
     monkeypatch.setattr(
-        transcriber.httpx,
+        http_service.httpx,
         "AsyncClient",
         lambda **kwargs: pytest.fail("Groq must not be called in mock mode"),
     )

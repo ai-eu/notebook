@@ -1,8 +1,6 @@
 import asyncio
 import json
-from pathlib import Path
 
-import httpx
 import pytest
 
 from app.config import settings
@@ -16,7 +14,6 @@ from app.services.tts import (
     _PROVIDERS,
     clean_text_for_tts,
     curated_voices,
-    get_provider,
 )
 
 

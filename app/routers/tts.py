@@ -1,6 +1,3 @@
-import asyncio
-import shutil
-import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -11,30 +8,18 @@ from app.auth import require_user
 from app.config import settings
 from app.database import get_db
 from app.models import Recording, User
+from app.services.jobs import job_runner
 from app.services.processing import process_tts
 from app.services.tts import curated_voices
 from app.utils import generate_recording_id, user_data_dir
 
 router = APIRouter(prefix="/api/tts", tags=["tts"])
 
-# Keep references to running tasks so they are not garbage-collected.
-_running_tasks = set()
-
 TEXT_EXTENSIONS = {".txt", ".md"}
 
 
 def _start_tts(recording_id: str, voice: str | None) -> None:
-    task = asyncio.create_task(process_tts(recording_id, voice=voice))
-    _running_tasks.add(task)
-
-    def _on_done(t):
-        _running_tasks.discard(t)
-        try:
-            t.result()
-        except Exception:
-            pass
-
-    task.add_done_callback(_on_done)
+    job_runner.submit(lambda: process_tts(recording_id, voice=voice))
 
 
 @router.get("/voices")

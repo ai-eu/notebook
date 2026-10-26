@@ -5,7 +5,7 @@ import soundfile as sf
 
 from app.config import settings
 from app.services import processing
-from app.services.converter import _run_ffmpeg, get_duration
+from app.services.converter import _run_ffmpeg
 from app.services.denoiser import denoise_to_mp3
 from tests.test_processing import _create_recording, _load, _stub_media_pipeline
 
@@ -96,7 +96,7 @@ def test_denoising_is_skipped_in_mock_mode(monkeypatch, tmp_path):
     async def fake_transcribe(path, api_key, language=None):
         return {"text": "hi", "segments": [], "duration": 5.0}
 
-    folder = _stub_media_pipeline(monkeypatch, tmp_path, fake_transcribe)
+    _stub_media_pipeline(monkeypatch, tmp_path, fake_transcribe)
     monkeypatch.setattr(settings, "mock_transcription", True)
     monkeypatch.setattr(settings, "denoise_level", "deep")
 

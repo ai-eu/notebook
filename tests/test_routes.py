@@ -46,6 +46,8 @@ def test_txt_download_appears_only_when_the_file_is_ready():
         async with _client() as client:
             await client.post("/api/auth/login", data={"key": KEY})
             folder = await _create_recording(await _signed_in_user_id())
+            # Nothing to build a transcript from yet.
+            (folder / "transcript.json").unlink()
 
             pending_page = await client.get("/t/rec-1")
             assert 'id="download-link"' in pending_page.text
@@ -57,6 +59,27 @@ def test_txt_download_appears_only_when_the_file_is_ready():
             ready_page = await client.get("/t/rec-1")
             assert 'download-link hidden' not in ready_page.text
             assert (await client.get("/api/recordings/rec-1/status")).json()["txt_ready"] is True
+
+    asyncio.run(scenario())
+
+
+def test_audio_route_pulls_evicted_audio_into_the_cache(monkeypatch, tmp_path, bot_api):
+    async def scenario():
+        async with _client() as client:
+            await client.post("/api/auth/login", data={"key": KEY})
+            user_id = await _signed_in_user_id()
+            folder = await _create_recording(user_id)
+
+            await archive.archive_recording("rec-1")
+            monkeypatch.setattr(settings, "local_retention_days", 0)
+            await archive.cleanup_local_audio()
+            assert not folder.exists()
+
+            monkeypatch.setattr(settings, "cache_dir", str(tmp_path / "cache"))
+            response = await client.get("/api/recordings/rec-1/audio")
+
+            assert response.status_code == 200
+            assert response.content == b"lecture" * 100
 
     asyncio.run(scenario())
 
@@ -89,6 +112,42 @@ def test_index_offers_the_theme_toggle():
             response = await client.get("/")
             assert response.status_code == 200
             assert 'id="theme-toggle"' in response.text
+
+    asyncio.run(scenario())
+
+
+def test_upload_rejects_a_file_over_the_size_limit(monkeypatch):
+    async def scenario():
+        monkeypatch.setattr(settings, "upload_max_size_mb", 1)
+        async with _client() as client:
+            await client.post("/api/auth/login", data={"key": KEY})
+            response = await client.post(
+                "/api/upload",
+                files={"file": ("big.mp3", b"x" * (1024 * 1024 + 1), "audio/mpeg")},
+            )
+
+            assert response.status_code == 413
+            async with AsyncSessionLocal() as db:
+                assert (await db.execute(select(Recording))).scalars().all() == []
+
+    asyncio.run(scenario())
+
+
+def test_recordings_are_paginated():
+    async def scenario():
+        async with _client() as client:
+            await client.post("/api/auth/login", data={"key": KEY})
+            user_id = await _signed_in_user_id()
+            await _create_recording(user_id, "rec-1")
+            await _create_recording(user_id, "rec-2")
+            await _create_recording(user_id, "rec-3")
+
+            page = await client.get("/api/recordings?limit=1&offset=1")
+
+            assert page.status_code == 200
+            items = page.json()
+            assert len(items) == 1
+            assert items[0]["recording_id"] in {"rec-1", "rec-2", "rec-3"}
 
     asyncio.run(scenario())
 

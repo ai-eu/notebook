@@ -1,7 +1,6 @@
 import asyncio
 import hashlib
 
-import pytest
 
 from app.config import settings
 from app.services.converter import mp3_frame_length, split_mp3_by_size
@@ -94,7 +93,6 @@ def test_a_foreign_stream_falls_back_to_ffmpeg(monkeypatch, tmp_path, bot_api):
 
 
 def test_parts_can_be_glued_back_into_the_original(monkeypatch, tmp_path, bot_api):
-    limit = settings.telegram_chunk_mb * 1024 * 1024
     payload = fake_mp3(60_000)
     folder = make_recording(monkeypatch, tmp_path, audio=payload, with_transcript=False)
 

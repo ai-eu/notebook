@@ -75,10 +75,13 @@
     }
 
     function highlightPair(index) {
-        highlightedIndex = index;
-        for (const el of document.querySelectorAll(".sentence")) {
-            el.classList.remove("highlighted");
+        if (index === highlightedIndex) return;
+
+        if (highlightedIndex >= 0) {
+            sentenceAt(originalSentences, highlightedIndex)?.classList.remove("highlighted");
+            sentenceAt(translatedSentences, highlightedIndex)?.classList.remove("highlighted");
         }
+        highlightedIndex = index;
         if (index < 0) return;
         sentenceAt(originalSentences, index)?.classList.add("highlighted");
         sentenceAt(translatedSentences, index)?.classList.add("highlighted");
@@ -104,11 +107,13 @@
             }
             const data = await res.json();
             const sentences = data.sentences || [];
+            const keepHighlight = highlightedIndex;
 
             translatedSentences.innerHTML = renderSentences(sentences, data.paragraphs);
+            highlightedIndex = -1;
 
             loadedLang = lang;
-            highlightPair(highlightedIndex);
+            highlightPair(keepHighlight);
         } catch (exc) {
             fail("Не удалось загрузить перевод: " + String(exc));
         }
@@ -129,6 +134,7 @@
     // Nothing to show: hide the column and return the dropdown to its empty state.
     function fail(message) {
         loadedLang = null;
+        highlightedIndex = -1;
         langSelect.value = "";
         hideTranslation();
         hint.textContent = message;

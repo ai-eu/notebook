@@ -7,9 +7,10 @@ enough to invalidate browser caches. No manual step is needed on deploy.
 """
 
 import subprocess
-from pathlib import Path
 
-_STATIC_DIR = Path("static")
+from app.config import BASE_DIR
+
+_STATIC_DIR = BASE_DIR / "static"
 
 
 def _git_commit() -> str:

@@ -29,7 +29,7 @@ router = APIRouter(prefix="/api/auth", tags=["auth"])
 
 @router.get("/login", response_class=HTMLResponse, name="login")
 async def login_page(request: Request, error: str | None = None):
-    return templates.TemplateResponse("login.html", {"request": request, "error": error})
+    return templates.TemplateResponse(request, "login.html", {"error": error})
 
 
 @router.post("/login")
@@ -42,8 +42,9 @@ async def login(
     ip = client_ip(request)
     if login_rate_limited(ip):
         return templates.TemplateResponse(
+            request,
             "login.html",
-            {"request": request, "error": "Too many failed attempts. Try again in a minute."},
+            {"error": "Too many failed attempts. Try again in a minute."},
             status_code=429,
         )
 
@@ -59,8 +60,9 @@ async def login(
     if not user:
         record_login_failure(ip)
         return templates.TemplateResponse(
+            request,
             "login.html",
-            {"request": request, "error": error},
+            {"error": error},
             status_code=401,
         )
 

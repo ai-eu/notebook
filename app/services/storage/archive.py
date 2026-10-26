@@ -12,7 +12,7 @@ from sqlalchemy import func, or_, select
 
 from app.config import settings
 from app.database import AsyncSessionLocal
-from app.models import Recording, StoredFile
+from app.models import Recording, RecordingArtifact, RemoteCleanup, StoredFile
 from app.services.converter import (
     calculate_chunk_minutes,
     get_audio_bitrate_kbps,
@@ -21,6 +21,13 @@ from app.services.converter import (
     split_mp3_by_size,
 )
 from app.services.storage import telegram
+from app.services.storage.artifacts import (
+    KIND_FORMATTED,
+    KIND_SENTENCES,
+    KIND_TRANSCRIPT,
+    ensure_artifacts,
+    translation_kind,
+)
 from app.utils import resolve_recording_path, safe_delete
 
 
@@ -28,22 +35,21 @@ CHUNK_DIR_NAME = "tg_chunks"
 AUDIO_KIND = "audio"
 # Files that stay on the server and are only backed up into the channel.
 ARTIFACTS = (
-    ("transcript", "transcript.json", "application/json"),
-    ("formatted", "formatted.txt", "text/plain"),
+    (KIND_TRANSCRIPT, "transcript.json", "application/json"),
+    (KIND_SENTENCES, "sentences.json", "application/json"),
+    (KIND_FORMATTED, "formatted.txt", "text/plain"),
 )
 
-
-def _artifact_kinds() -> tuple[str, ...]:
-    """Return all artifact kind names: 'transcript', 'formatted', and per-language 'formatted-<lang>'."""
-    kinds = ("transcript", "formatted")
-    for lang in settings.translation_target_languages:
-        kinds += (f"formatted-{lang}",)
-    return kinds
 
 _last_send_at = 0.0
 
 
-KIND_LABELS = {"audio": "audio", "transcript": "transcript", "formatted": "formatted text"}
+KIND_LABELS = {
+    "audio": "audio",
+    "transcript": "transcript",
+    "sentences": "sentences",
+    "formatted": "formatted text",
+}
 
 
 def _human_label(recording: Recording, kind: str, idx: int, total: int) -> str:
@@ -68,6 +74,9 @@ def build_caption(
     size: int,
     sha256: str,
     label: str | None = None,
+    *,
+    uid: int | None = None,
+    version: int | None = None,
 ) -> str:
     """The metadata line is the only index that survives a lost database.
 
@@ -75,6 +84,10 @@ def build_caption(
     shadow the real fields in parse_caption (later matches win).
     """
     meta = f"rid={recording_id};kind={kind};part={idx + 1}/{total};size={size};sha={sha256}"
+    if uid is not None:
+        meta += f";uid={uid}"
+    if version is not None:
+        meta += f";ver={version}"
     return f"{label}\n{meta}" if label else meta
 
 
@@ -153,6 +166,21 @@ async def _stored_files(db, recording_id: str) -> dict[tuple[str, int], StoredFi
     return {(row.kind, row.idx): row for row in rows}
 
 
+async def _enqueue_cleanup_row(db, row: StoredFile, recording_id: str) -> None:
+    """Remember a message that must be deleted after a file is replaced/removed."""
+    if not row.tg_message_id:
+        return
+    db.add(
+        RemoteCleanup(
+            recording_id=recording_id,
+            chat_id=row.tg_chat_id,
+            message_id=row.tg_message_id,
+            sent_at=row.uploaded_at,
+        )
+    )
+    await db.commit()
+
+
 async def _upload_part(
     db,
     recording: Recording,
@@ -163,6 +191,7 @@ async def _upload_part(
     total: int,
     mime_type: str,
     existing: StoredFile | None = None,
+    version: int | None = None,
 ) -> StoredFile:
     size = path.stat().st_size
     digest = await _sha256(path)
@@ -174,6 +203,8 @@ async def _upload_part(
         size,
         digest,
         label=_human_label(recording, kind, idx, total),
+        uid=recording.user_id,
+        version=version,
     )
     message = await telegram.send_document(path, caption=caption, mime_type=mime_type)
 
@@ -181,6 +212,11 @@ async def _upload_part(
     file_id = document.get("file_id")
     if not file_id:
         raise telegram.TelegramError(f"sendDocument returned no file_id for {path.name}")
+    remote_size = document.get("file_size")
+    if remote_size is not None and int(remote_size) != size:
+        raise telegram.TelegramError(
+            f"{path.name}: Telegram reports {remote_size} bytes instead of {size}"
+        )
 
     row = existing or StoredFile(recording_id=recording.recording_id, kind=kind, idx=idx)
     row.local_path = _relative(path)
@@ -197,13 +233,88 @@ async def _upload_part(
     return row
 
 
-async def archive_recording(recording_id: str, *, force: bool = False) -> dict:
-    """Copy the audio and the transcript files of a recording into the channel.
+async def _upload_content(
+    db,
+    recording: Recording,
+    *,
+    kind: str,
+    filename: str,
+    content: str,
+    mime_type: str,
+    existing: StoredFile | None = None,
+    version: int | None = None,
+) -> tuple[StoredFile, bool]:
+    """Upload a text artifact from SQLite; returns (row, uploaded)."""
+    payload = content.encode("utf-8")
+    size = len(payload)
+    digest = hashlib.sha256(payload).hexdigest()
+    if (
+        existing is not None
+        and existing.sha256 == digest
+        and existing.size_bytes == size
+    ):
+        return existing, False
 
-    Idempotent: parts that are already uploaded are skipped, so an interrupted
-    upload can simply be started again.
-    """
+    old_message_id = existing.tg_message_id if existing is not None else None
+    old_chat_id = existing.tg_chat_id if existing is not None else None
+    old_uploaded_at = existing.uploaded_at if existing is not None else None
+
+    caption = build_caption(
+        recording.recording_id,
+        kind,
+        0,
+        1,
+        size,
+        digest,
+        label=_human_label(recording, kind, 0, 1),
+        uid=recording.user_id,
+        version=version,
+    )
+    message = await telegram.send_document_bytes(
+        filename, payload, caption=caption, mime_type=mime_type
+    )
+    document = message.get("document") or message.get("audio") or {}
+    file_id = document.get("file_id")
+    if not file_id:
+        raise telegram.TelegramError(f"sendDocument returned no file_id for {filename}")
+    remote_size = document.get("file_size")
+    if remote_size is not None and int(remote_size) != size:
+        raise telegram.TelegramError(
+            f"{filename}: Telegram reports {remote_size} bytes instead of {size}"
+        )
+
+    row = existing or StoredFile(recording_id=recording.recording_id, kind=kind, idx=0)
+    row.local_path = None
+    row.size_bytes = size
+    row.sha256 = digest
+    row.tg_chat_id = str((message.get("chat") or {}).get("id") or settings.telegram_chat_id or "")
+    row.tg_message_id = message.get("message_id")
+    row.tg_file_id = file_id
+    row.tg_file_unique_id = document.get("file_unique_id")
+    row.uploaded_at = datetime.now(timezone.utc)
+    db.add(row)
+    if old_message_id:
+        # Queue the old version only after the replacement was stored successfully.
+        db.add(
+            RemoteCleanup(
+                recording_id=recording.recording_id,
+                chat_id=old_chat_id,
+                message_id=old_message_id,
+                sent_at=old_uploaded_at,
+            )
+        )
+    await db.commit()
+    await _throttle()
+    return row, True
+
+
+async def archive_audio(recording_id: str, *, force: bool = False) -> dict:
+    """Upload the audio parts. Safe to run again after an interruption."""
     telegram.require_configuration()
+    folder: Path | None = None
+    uploaded = 0
+    parts_count = 0
+
     async with AsyncSessionLocal() as db:
         recording = (
             await db.execute(select(Recording).where(Recording.recording_id == recording_id))
@@ -213,9 +324,19 @@ async def archive_recording(recording_id: str, *, force: bool = False) -> dict:
 
         folder = resolve_recording_path(recording.folder_path)
         existing = await _stored_files(db, recording_id)
-        parts = await plan_parts(folder, folder / "audio.mp3")
+        audio_path = folder / "audio.mp3"
 
-        uploaded = 0
+        if not audio_path.exists():
+            audio_rows = [row for (kind, _), row in existing.items() if kind == AUDIO_KIND]
+            if audio_rows:
+                recording.archive_verified_at = datetime.now(timezone.utc)
+                await db.commit()
+                safe_delete(folder / CHUNK_DIR_NAME)
+                return {"recording_id": recording_id, "parts": len(audio_rows), "uploaded": 0}
+            raise FileNotFoundError(f"Audio file not found: {audio_path}")
+
+        parts = await plan_parts(folder, audio_path)
+        parts_count = len(parts)
         try:
             for idx, part in enumerate(parts):
                 if not force and (AUDIO_KIND, idx) in existing:
@@ -231,54 +352,103 @@ async def archive_recording(recording_id: str, *, force: bool = False) -> dict:
                     existing=existing.get((AUDIO_KIND, idx)),
                 )
                 uploaded += 1
-
-            for kind, name, mime_type in ARTIFACTS:
-                path = folder / name
-                if not path.exists() or (not force and (kind, 0) in existing):
-                    continue
-                await _upload_part(
-                    db,
-                    recording,
-                    path,
-                    kind=kind,
-                    idx=0,
-                    total=1,
-                    mime_type=mime_type,
-                    existing=existing.get((kind, 0)),
-                )
-                uploaded += 1
-
-            # Archive per-language formatted translations as well.
-            for lang in settings.translation_target_languages:
-                kind = f"formatted-{lang}"
-                name = f"formatted-{lang}.txt"
-                path = folder / name
-                if not path.exists() or (not force and (kind, 0) in existing):
-                    continue
-                await _upload_part(
-                    db,
-                    recording,
-                    path,
-                    kind=kind,
-                    idx=0,
-                    total=1,
-                    mime_type="text/plain",
-                    existing=existing.get((kind, 0)),
-                )
-                uploaded += 1
         except Exception:
             if uploaded or await _has_remote_files(db, recording_id):
                 recording.storage_state = "partial"
                 await db.commit()
             raise
 
-        recording.storage_state = "tg"
-        recording.archived_at = datetime.now(timezone.utc)
+        recording.archive_verified_at = datetime.now(timezone.utc)
         await db.commit()
 
-    # The upload parts are derived data: audio.mp3 can be split again if needed.
-    safe_delete(folder / CHUNK_DIR_NAME)
-    return {"recording_id": recording_id, "parts": len(parts), "uploaded": uploaded}
+    if folder is not None:
+        # The upload parts are derived data: audio.mp3 can be split again if needed.
+        safe_delete(folder / CHUNK_DIR_NAME)
+    return {"recording_id": recording_id, "parts": parts_count, "uploaded": uploaded}
+
+
+async def archive_artifacts(recording_id: str, *, force: bool = False) -> dict:
+    """Upload transcript/formatted/translation artifacts stored in SQLite."""
+    telegram.require_configuration()
+    uploaded = 0
+
+    async with AsyncSessionLocal() as db:
+        recording = (
+            await db.execute(select(Recording).where(Recording.recording_id == recording_id))
+        ).scalar_one_or_none()
+        if not recording:
+            raise ValueError(f"Recording {recording_id} not found")
+
+        artifacts = await ensure_artifacts(db, recording)
+        existing = await _stored_files(db, recording_id)
+
+        for kind, name, mime_type in ARTIFACTS:
+            content = artifacts.get(kind)
+            if content is None:
+                continue
+            _, was_uploaded = await _upload_content(
+                db,
+                recording,
+                kind=kind,
+                filename=name,
+                content=content,
+                mime_type=mime_type,
+                existing=existing.get((kind, 0)),
+            )
+            uploaded += int(was_uploaded)
+
+        for lang in settings.translation_target_languages:
+            kind = translation_kind(lang)
+            content = artifacts.get(kind)
+            if content is None:
+                continue
+            _, was_uploaded = await _upload_content(
+                db,
+                recording,
+                kind=kind,
+                filename=f"translation-{lang}.json",
+                content=content,
+                mime_type="application/json",
+                existing=existing.get((kind, 0)),
+            )
+            uploaded += int(was_uploaded)
+
+    return {"recording_id": recording_id, "uploaded": uploaded}
+
+
+async def archive_recording(recording_id: str, *, force: bool = False) -> dict:
+    """Copy the audio and text artifacts of a recording into the channel.
+
+    Audio and text are uploaded independently: a recording whose audio is already
+    evicted can still archive a new translation or a re-rendered text.
+    """
+    audio_result = await archive_audio(recording_id, force=force)
+    try:
+        artifact_result = await archive_artifacts(recording_id, force=force)
+    except Exception:
+        async with AsyncSessionLocal() as db:
+            recording = (
+                await db.execute(select(Recording).where(Recording.recording_id == recording_id))
+            ).scalar_one_or_none()
+            if recording:
+                recording.storage_state = "partial"
+                await db.commit()
+        raise
+
+    async with AsyncSessionLocal() as db:
+        recording = (
+            await db.execute(select(Recording).where(Recording.recording_id == recording_id))
+        ).scalar_one_or_none()
+        if recording:
+            recording.storage_state = "tg"
+            recording.archived_at = datetime.now(timezone.utc)
+            await db.commit()
+
+    return {
+        "recording_id": recording_id,
+        "parts": audio_result["parts"],
+        "uploaded": audio_result["uploaded"] + artifact_result["uploaded"],
+    }
 
 
 async def _has_remote_files(db, recording_id: str) -> bool:
@@ -302,6 +472,8 @@ async def _refresh_file_id(db, row: StoredFile) -> None:
     file_id = document.get("file_id")
     if not file_id:
         raise telegram.TelegramError("copyMessage returned no file_id")
+    # The old message is no longer the pointer; queue it for best-effort deletion.
+    await _enqueue_cleanup_row(db, row, row.recording_id)
     logging.warning(
         "Refreshed file_id of %s %s[%s] via message %s",
         row.recording_id,
@@ -449,6 +621,45 @@ async def pending_recordings(limit: int | None = None) -> list[str]:
     return pending[:limit] if limit else pending
 
 
+async def pending_artifact_recordings(limit: int | None = None) -> list[str]:
+    """Recordings whose text artifacts are in SQLite but not yet in the channel."""
+    kinds = [KIND_TRANSCRIPT, KIND_SENTENCES, KIND_FORMATTED]
+    kinds.extend(translation_kind(lang) for lang in settings.translation_target_languages)
+
+    async with AsyncSessionLocal() as db:
+        artifact_rows = (
+            await db.execute(
+                select(RecordingArtifact.recording_id, RecordingArtifact.kind).where(
+                    RecordingArtifact.kind.in_(kinds)
+                )
+            )
+        ).all()
+        stored_rows = (
+            await db.execute(
+                select(StoredFile.recording_id, StoredFile.kind).where(
+                    StoredFile.kind.in_(kinds)
+                )
+            )
+        ).all()
+        done_ids = set(
+            (
+                await db.execute(
+                    select(Recording.recording_id).where(Recording.status == "done")
+                )
+            ).scalars()
+        )
+
+    stored = {(recording_id, kind) for recording_id, kind in stored_rows}
+    pending = sorted(
+        {
+            recording_id
+            for recording_id, kind in artifact_rows
+            if recording_id in done_ids and (recording_id, kind) not in stored
+        }
+    )
+    return pending[:limit] if limit else pending
+
+
 async def archived_recordings() -> list[str]:
     async with AsyncSessionLocal() as db:
         rows = (
@@ -502,16 +713,161 @@ async def delete_remote_copy(recording_id: str) -> int:
     return removed
 
 
-async def cleanup_local_audio(*, now: datetime | None = None, dry_run: bool = False) -> dict:
-    """Drop the audio of recordings that have been in the channel for longer than the retention.
+async def enqueue_remote_cleanup(recording_id: str) -> int:
+    """Remember every channel message of a recording before its DB row disappears."""
+    async with AsyncSessionLocal() as db:
+        rows = (
+            await db.execute(
+                select(StoredFile).where(StoredFile.recording_id == recording_id)
+            )
+        ).scalars().all()
+        queued = 0
+        for row in rows:
+            if not row.tg_message_id:
+                continue
+            db.add(
+                RemoteCleanup(
+                    recording_id=recording_id,
+                    chat_id=row.tg_chat_id,
+                    message_id=row.tg_message_id,
+                    sent_at=row.uploaded_at,
+                )
+            )
+            queued += 1
+        await db.commit()
+    return queued
 
-    Transcripts stay on the server, and `keep_local` protects recordings that were
-    pulled back with `tg-restore`.
+
+async def enqueue_artifact_cleanup(recording_id: str, kind: str) -> int:
+    """Remove one archived artifact (e.g. a deleted translation) from the channel."""
+    async with AsyncSessionLocal() as db:
+        rows = (
+            await db.execute(
+                select(StoredFile).where(
+                    StoredFile.recording_id == recording_id,
+                    StoredFile.kind == kind,
+                )
+            )
+        ).scalars().all()
+        for row in rows:
+            if row.tg_message_id:
+                db.add(
+                    RemoteCleanup(
+                        recording_id=recording_id,
+                        chat_id=row.tg_chat_id,
+                        message_id=row.tg_message_id,
+                        sent_at=row.uploaded_at,
+                    )
+                )
+            await db.delete(row)
+        await db.commit()
+        return len(rows)
+
+
+async def process_remote_cleanup(limit: int = 50) -> dict:
+    """Delete queued channel messages; old messages become manual cleanup items."""
+    summary = {"deleted": 0, "failed": 0, "manual": 0}
+    if not telegram.is_configured():
+        return summary
+
+    async with AsyncSessionLocal() as db:
+        rows = (
+            await db.execute(
+                select(RemoteCleanup)
+                .where(RemoteCleanup.status == "pending")
+                .order_by(RemoteCleanup.id)
+                .limit(limit)
+            )
+        ).scalars().all()
+
+        now = datetime.now(timezone.utc)
+        for row in rows:
+            try:
+                await telegram.delete_message(
+                    row.message_id, chat_id=row.chat_id or None, retries=1
+                )
+            except telegram.TelegramError as exc:
+                row.attempts += 1
+                row.last_error = str(exc)[:500]
+                sent_at = row.sent_at
+                if sent_at is not None and sent_at.tzinfo is None:
+                    sent_at = sent_at.replace(tzinfo=timezone.utc)
+                if sent_at is not None and now - sent_at > timedelta(hours=47):
+                    row.status = "manual"
+                    summary["manual"] += 1
+                else:
+                    summary["failed"] += 1
+                await db.commit()
+                continue
+
+            await db.delete(row)
+            await db.commit()
+            summary["deleted"] += 1
+
+    return summary
+
+
+async def list_remote_orphans() -> list[RemoteCleanup]:
+    async with AsyncSessionLocal() as db:
+        return list(
+            (
+                await db.execute(
+                    select(RemoteCleanup)
+                    .where(RemoteCleanup.status == "manual")
+                    .order_by(RemoteCleanup.id)
+                )
+            ).scalars()
+        )
+
+
+def _evict_local_files(recording: Recording, *, dry_run: bool = False) -> tuple[int, int]:
+    """Remove working files and legacy text; the DB and Telegram stay intact."""
+    folder = resolve_recording_path(recording.folder_path)
+    files = [
+        folder / "audio.mp3",
+        folder / "original.tmp",
+        folder / "transcript.json",
+        folder / "formatted.txt",
+        folder / "formatted-smart.txt",
+    ]
+    files.extend(folder / f"formatted-{lang}.txt" for lang in settings.translation_target_languages)
+    directories = [folder / "chunks", folder / CHUNK_DIR_NAME]
+
+    removed = 0
+    freed = 0
+    for path in files:
+        if not path.is_file():
+            continue
+        freed += path.stat().st_size
+        removed += 1
+        if not dry_run:
+            safe_delete(path)
+    for path in directories:
+        if not path.is_dir():
+            continue
+        removed += sum(1 for item in path.rglob("*") if item.is_file())
+        if not dry_run:
+            safe_delete(path)
+    if not dry_run:
+        try:
+            folder.rmdir()
+        except OSError:
+            pass
+    return removed, freed
+
+
+async def cleanup_local_audio(*, now: datetime | None = None, dry_run: bool = False) -> dict:
+    """Evict local files after a verified archive and the retention window.
+
+    Text is already in SQLite, so only the audio has to be pulled back into the
+    cache on demand. ``keep_local`` protects a copy restored on purpose.
     """
-    days = settings.audio_retention_days
-    if days <= 0:
+    days = settings.effective_local_retention_days
+    if days < 0:
         return {"removed": 0, "freed_bytes": 0}
-    cutoff = (now or datetime.now(timezone.utc)) - timedelta(days=days)
+    if not telegram.is_configured():
+        return {"removed": 0, "freed_bytes": 0}
+    cutoff = (now or datetime.now(timezone.utc)) - timedelta(days=max(0, days))
 
     async with AsyncSessionLocal() as db:
         rows = (
@@ -519,6 +875,7 @@ async def cleanup_local_audio(*, now: datetime | None = None, dry_run: bool = Fa
                 select(Recording).where(
                     Recording.storage_state == "tg",
                     Recording.keep_local.is_(False),
+                    Recording.archive_verified_at.is_not(None),
                     Recording.archived_at.is_not(None),
                     Recording.archived_at < cutoff,
                 )
@@ -528,21 +885,31 @@ async def cleanup_local_audio(*, now: datetime | None = None, dry_run: bool = Fa
         removed = 0
         freed = 0
         for recording in rows:
-            folder = resolve_recording_path(recording.folder_path)
-            audio = folder / "audio.mp3"
-            if audio.exists():
-                freed += audio.stat().st_size
-                removed += 1
-                if not dry_run:
-                    safe_delete(audio)
+            record_removed, record_freed = _evict_local_files(recording, dry_run=dry_run)
+            removed += record_removed
+            freed += record_freed
             if not dry_run:
-                # The chunks were only needed for the upload.
-                safe_delete(folder / "chunks")
-                safe_delete(folder / CHUNK_DIR_NAME)
                 recording.storage_state = "evicted"
         if not dry_run:
             await db.commit()
 
     if removed and not dry_run:
-        logging.info("Dropped %s local audio file(s), freed %s bytes", removed, freed)
+        logging.info("Evicted %s local file(s), freed %s bytes", removed, freed)
     return {"removed": removed, "freed_bytes": freed}
+
+
+async def evict_local_files(recording_id: str, *, force: bool = False) -> dict:
+    """Evict one recording's local files (used by storage-backfill)."""
+    async with AsyncSessionLocal() as db:
+        recording = (
+            await db.execute(select(Recording).where(Recording.recording_id == recording_id))
+        ).scalar_one_or_none()
+        if not recording:
+            raise ValueError(f"Recording {recording_id} not found")
+        if not force and (recording.archive_verified_at is None or recording.keep_local):
+            return {"recording_id": recording_id, "removed": 0, "freed_bytes": 0}
+
+        removed, freed = _evict_local_files(recording)
+        recording.storage_state = "evicted"
+        await db.commit()
+    return {"recording_id": recording_id, "removed": removed, "freed_bytes": freed}

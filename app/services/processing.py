@@ -1,8 +1,5 @@
 import asyncio
-import json
 import logging
-import shutil
-import traceback
 from datetime import datetime, timezone
 from pathlib import Path
 from sqlalchemy import select
@@ -16,15 +13,29 @@ from app.services.converter import (
     get_duration,
     get_file_size_mb,
     split_audio,
+    split_mp3_by_size,
     is_mp3_passthrough,
     get_audio_bitrate_kbps,
     calculate_chunk_minutes,
 )
 from app.services.denoiser import denoise_to_mp3
 from app.services.groq import GroqAuthError, resolve_groq_key
-from app.services.formatter import format_transcript
+from app.services.formatter import (
+    MAX_LINE_LENGTH,
+    build_sentence_document,
+    clean_transcript,
+    render_formatted,
+    smart_format_document,
+)
+from app.services.jobs import job_runner
 from app.services.storage import telegram
 from app.services.storage.archive import archive_recording
+from app.services.storage.artifacts import (
+    dump_json,
+    save_formatted,
+    save_sentences,
+    save_transcript,
+)
 from app.services.transcriber import transcribe_file, transcribe_chunks
 from app.services.tts import (
     TTSAuthError,
@@ -34,7 +45,6 @@ from app.services.tts import (
     get_tts_progress,
     clean_text_for_tts,
     normalize_text,
-    safe_unlink,
     set_tts_progress,
     split_voice,
     synthesize_chunk,
@@ -78,7 +88,7 @@ def _clear_processing_progress(recording_id: str) -> None:
     processing_progress.pop(recording_id, None)
 
 
-async def process_recording(recording_id: str):
+async def process_recording(recording_id: str, *, resume_audio: bool = False):
     async with AsyncSessionLocal() as db:
         result = await db.execute(select(Recording).where(Recording.recording_id == recording_id))
         recording = result.scalar_one_or_none()
@@ -89,9 +99,20 @@ async def process_recording(recording_id: str):
         user = await db.get(User, recording.user_id)
         api_key = resolve_groq_key(user)
 
+        recording.attempts = (recording.attempts or 0) + 1
+        if recording.attempts > settings.max_job_attempts:
+            recording.status = "error"
+            recording.error_message = "Processing failed too many times. Please upload the file again."
+            recording.updated_at = datetime.now(timezone.utc)
+            await db.commit()
+            _clear_processing_progress(recording_id)
+            return
+
         recording.status = "processing"
         recording.updated_at = datetime.now(timezone.utc)
         await db.commit()
+
+        folder: Path | None = None
 
         try:
             folder = resolve_recording_path(recording.folder_path)
@@ -100,32 +121,35 @@ async def process_recording(recording_id: str):
             transcript_path = folder / "transcript.json"
             formatted_path = folder / "formatted.txt"
 
-            if not original_path.exists():
-                raise ValueError("Original file not found")
+            if original_path.exists():
+                info = await get_media_info(original_path)
+                if not has_audio_stream(info):
+                    raise ValueError("No audio stream in uploaded file")
 
-            info = await get_media_info(original_path)
-            if not has_audio_stream(info):
-                raise ValueError("No audio stream in uploaded file")
+                passthrough = is_mp3_passthrough(info)
 
-            passthrough = is_mp3_passthrough(info)
-
-            if settings.denoise_level in ("light", "deep") and not settings.mock_transcription:
-                set_processing_stage(recording_id, "denoising")
-                try:
-                    await denoise_to_mp3(original_path, audio_path)
-                    # The audio was decoded and re-encoded, so passthrough no longer applies.
-                    passthrough = False
-                except Exception as exc:
-                    logging.warning("Denoising failed for %s, using the original audio: %s", recording_id, exc)
+                if settings.denoise_level in ("light", "deep") and not settings.mock_transcription:
+                    set_processing_stage(recording_id, "denoising")
+                    try:
+                        await denoise_to_mp3(original_path, audio_path)
+                        # The audio was decoded and re-encoded, so passthrough no longer applies.
+                        passthrough = False
+                    except Exception as exc:
+                        logging.warning("Denoising failed for %s, using the original audio: %s", recording_id, exc)
+                        set_processing_stage(recording_id, "converting")
+                        await convert_to_mp3(original_path, audio_path, passthrough=passthrough)
+                else:
                     set_processing_stage(recording_id, "converting")
                     await convert_to_mp3(original_path, audio_path, passthrough=passthrough)
+                duration = await get_duration(audio_path)
+            elif resume_audio and audio_path.exists():
+                # The server restarted after conversion: reuse audio.mp3 and only
+                # repeat the transcription/formatting part.
+                info = {}
+                passthrough = False
+                duration = await get_duration(audio_path)
             else:
-                set_processing_stage(recording_id, "converting")
-                await convert_to_mp3(original_path, audio_path, passthrough=passthrough)
-            duration = await get_duration(audio_path)
-
-            # Remove the original after conversion.
-            safe_delete(original_path)
+                raise ValueError("Original file not found")
 
             # Determine the output bitrate for chunk size calculation.
             if passthrough:
@@ -144,7 +168,22 @@ async def process_recording(recording_id: str):
             file_size_mb = get_file_size_mb(audio_path)
             if file_size_mb > settings.target_chunk_mb or duration > chunk_minutes * 60:
                 chunks_dir = folder / "chunks"
-                chunk_paths = await split_audio(audio_path, chunks_dir, chunk_minutes, passthrough=passthrough)
+                # Byte-exact frame cuts avoid decoding/re-encoding the same MP3.
+                byte_parts = await asyncio.to_thread(
+                    split_mp3_by_size,
+                    audio_path,
+                    chunks_dir,
+                    int(settings.target_chunk_mb * 1024 * 1024),
+                )
+                if byte_parts:
+                    chunk_paths = byte_parts
+                else:
+                    chunk_paths = await split_audio(
+                        audio_path,
+                        chunks_dir,
+                        chunk_minutes,
+                        passthrough=passthrough,
+                    )
 
             if len(chunk_paths) == 1:
                 transcript = await transcribe_file(audio_path, api_key)
@@ -157,15 +196,29 @@ async def process_recording(recording_id: str):
 
             set_processing_stage(recording_id, "formatting")
 
-            transcript_path.write_text(json.dumps(transcript, ensure_ascii=False, indent=2), encoding="utf-8")
-            formatted = await format_transcript(
-                transcript,
-                api_key=api_key,
-                use_groq=settings.smart_format,
-            )
+            transcript = clean_transcript(transcript)
+            document = build_sentence_document(transcript)
+            if settings.smart_format and api_key:
+                document = await smart_format_document(document, api_key)
+            elif settings.smart_format:
+                logging.warning(
+                    "Smart formatting is enabled, but the user has no Groq API key — skipping it."
+                )
+
+            formatted = render_formatted(document, max_line_length=MAX_LINE_LENGTH)
+            await save_transcript(db, recording_id, transcript, commit=False)
+            await save_sentences(db, recording_id, document, commit=False)
+            await save_formatted(db, recording_id, formatted, commit=False)
+
+            # Legacy files stay for one release/backfill; the DB is the source of truth.
+            transcript_path.write_text(dump_json(transcript), encoding="utf-8")
             formatted_path.write_text(formatted, encoding="utf-8")
             if settings.smart_format:
                 (folder / "formatted-smart.txt").write_text(formatted, encoding="utf-8")
+
+            # The transcript and the formatted text are saved: the original upload is
+            # no longer needed. On any earlier failure it stays for a retry.
+            safe_delete(original_path)
 
             recording.status = "done"
             recording.duration = duration
@@ -187,7 +240,11 @@ async def process_recording(recording_id: str):
             recording.error_message = f"{type(exc).__name__}: {exc}"
             recording.updated_at = datetime.now(timezone.utc)
             await db.commit()
-            # Keep files for diagnostics.
+            # Keep the original/audio for diagnostics and retries.
+        finally:
+            if folder is not None:
+                # Chunks are derived data: audio.mp3 can always be split again.
+                safe_delete(folder / "chunks")
 
         _clear_processing_progress(recording_id)
 
@@ -242,13 +299,15 @@ async def process_tts(recording_id: str, voice: str | None = None):
 
             set_tts_progress(recording_id, 0, len(chunks))
             semaphore = asyncio.Semaphore(max(1, settings.tts_concurrency))
+            progress_lock = asyncio.Lock()
 
             async def synth(index: int) -> Path:
                 async with semaphore:
                     out_path = chunks_dir / f"tts-{index:03d}.{provider.audio_format}"
                     await synthesize_chunk(provider, chunks[index], voice_name, out_path)
-                    done = get_tts_progress(recording_id).get("chunks_done", 0)
-                    set_tts_progress(recording_id, done + 1, len(chunks))
+                    async with progress_lock:
+                        done = get_tts_progress(recording_id).get("chunks_done", 0)
+                        set_tts_progress(recording_id, done + 1, len(chunks))
                     return out_path
 
             chunk_paths = list(await asyncio.gather(*(synth(i) for i in range(len(chunks)))))
@@ -270,20 +329,21 @@ async def process_tts(recording_id: str, voice: str | None = None):
                 )
                 offset += duration
 
-            transcript_path.write_text(
-                json.dumps(
-                    {
-                        "text": text,
-                        "language": None,
-                        "duration": total_duration,
-                        "segments": segments,
-                    },
-                    ensure_ascii=False,
-                    indent=2,
-                ),
-                encoding="utf-8",
-            )
-            formatted_path.write_text(text, encoding="utf-8")
+            transcript = {
+                "text": text,
+                "language": None,
+                "duration": total_duration,
+                "segments": segments,
+            }
+            document = build_sentence_document(transcript)
+            formatted = render_formatted(document, max_line_length=MAX_LINE_LENGTH)
+
+            await save_transcript(db, recording_id, transcript, commit=False)
+            await save_sentences(db, recording_id, document, commit=False)
+            await save_formatted(db, recording_id, formatted, commit=False)
+
+            transcript_path.write_text(dump_json(transcript), encoding="utf-8")
+            formatted_path.write_text(formatted, encoding="utf-8")
 
             safe_delete(original_path)
             safe_delete(chunks_dir)
@@ -312,3 +372,79 @@ async def process_tts(recording_id: str, voice: str | None = None):
             await _archive_to_telegram(recording_id)
 
         tts_progress.pop(recording_id, None)
+
+
+async def recover_interrupted_jobs() -> dict:
+    """Requeue or close recordings that were left `pending`/`processing` by a restart.
+
+    Returns a small summary for the startup log.
+    """
+    requeue: list[tuple[str, str, bool]] = []
+    summary = {"requeued": 0, "marked_done": 0, "failed": 0}
+
+    async with AsyncSessionLocal() as db:
+        rows = (
+            await db.execute(
+                select(Recording).where(Recording.status.in_(("pending", "processing")))
+            )
+        ).scalars().all()
+
+        for recording in rows:
+            folder = resolve_recording_path(recording.folder_path)
+            kind = recording.kind or "transcription"
+            attempts = recording.attempts or 0
+
+            if attempts >= settings.max_job_attempts:
+                recording.status = "error"
+                recording.error_message = "Processing was interrupted too many times. Please upload the file again."
+                summary["failed"] += 1
+                continue
+
+            if kind == "tts":
+                if (folder / "original.tmp").exists():
+                    recording.status = "pending"
+                    recording.error_message = None
+                    requeue.append((recording.recording_id, kind, False))
+                elif (folder / "audio.mp3").exists() and (folder / "transcript.json").exists():
+                    recording.status = "done"
+                    summary["marked_done"] += 1
+                else:
+                    recording.status = "error"
+                    recording.error_message = "The text file was lost during processing. Please upload it again."
+                    summary["failed"] += 1
+                continue
+
+            if (
+                recording.status == "processing"
+                and (folder / "transcript.json").exists()
+                and (folder / "formatted.txt").exists()
+            ):
+                recording.status = "done"
+                summary["marked_done"] += 1
+            elif (folder / "original.tmp").exists():
+                recording.status = "pending"
+                recording.error_message = None
+                requeue.append((recording.recording_id, kind, False))
+            elif (folder / "audio.mp3").exists():
+                recording.status = "pending"
+                recording.error_message = None
+                requeue.append((recording.recording_id, kind, True))
+            else:
+                recording.status = "error"
+                recording.error_message = "The uploaded file was lost. Please upload it again."
+                summary["failed"] += 1
+
+        await db.commit()
+
+    for recording_id, kind, resume_audio in requeue:
+        if kind == "tts":
+            job_runner.submit(lambda rid=recording_id: process_tts(rid))
+        elif resume_audio:
+            job_runner.submit(lambda rid=recording_id: process_recording(rid, resume_audio=True))
+        else:
+            job_runner.submit(lambda rid=recording_id: process_recording(rid))
+
+    summary["requeued"] = len(requeue)
+    if requeue or summary["failed"] or summary["marked_done"]:
+        logging.info("Recovered interrupted jobs: %s", summary)
+    return summary

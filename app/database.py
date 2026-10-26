@@ -1,13 +1,41 @@
-from sqlalchemy import inspect, text
+from pathlib import Path
+
+from sqlalchemy import event, inspect, text
 from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker, AsyncSession
 from sqlalchemy.orm import declarative_base
-from app.config import settings
+from app.config import BASE_DIR, settings
+
+
+def _database_url() -> str:
+    url = str(settings.database_url)
+    prefix = "sqlite+aiosqlite:///"
+    if url.startswith(prefix):
+        path = url[len(prefix):]
+        if path and path != ":memory:" and not Path(path).is_absolute():
+            url = prefix + (BASE_DIR / path).as_posix()
+    return url
+
 
 engine = create_async_engine(
-    str(settings.database_url),
+    _database_url(),
     future=True,
     echo=False,
 )
+
+
+if str(settings.database_url).startswith("sqlite"):
+    @event.listens_for(engine.sync_engine, "connect")
+    def _set_sqlite_pragmas(dbapi_connection, _connection_record) -> None:
+        """WAL + busy_timeout keep concurrent background writes from locking the DB.
+
+        foreign_keys is off by default in SQLite, so ON DELETE CASCADE in the models
+        would otherwise never fire at the database level.
+        """
+        cursor = dbapi_connection.cursor()
+        cursor.execute("PRAGMA journal_mode=WAL")
+        cursor.execute("PRAGMA busy_timeout=5000")
+        cursor.execute("PRAGMA foreign_keys=ON")
+        cursor.close()
 
 AsyncSessionLocal = async_sessionmaker(
     engine,
@@ -33,6 +61,7 @@ async def init_db() -> None:
         await conn.run_sync(_migrate_device_invites)
         await conn.run_sync(Base.metadata.create_all)
         await conn.run_sync(_add_missing_columns)
+        await conn.run_sync(_ensure_indexes)
 
 
 def _migrate_device_invites(conn) -> None:
@@ -64,6 +93,16 @@ def _add_missing_columns(conn) -> None:
             if column.default is not None and getattr(column.default, "is_scalar", False):
                 ddl += f" DEFAULT {_sql_literal(column.default.arg)}"
             conn.execute(text(ddl))
+
+
+def _ensure_indexes(conn) -> None:
+    """`create_all` does not add indexes to tables that already exist."""
+    conn.execute(
+        text(
+            "CREATE INDEX IF NOT EXISTS ix_recordings_user_created "
+            "ON recordings (user_id, created_at)"
+        )
+    )
 
 
 def _sql_literal(value) -> str:

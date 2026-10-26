@@ -8,8 +8,14 @@ from sqlalchemy import select
 
 from app.config import settings
 from app.database import AsyncSessionLocal
-from app.models import Recording
+from app.models import Recording, RemoteCleanup
 from app.services.storage import archive, cache
+from app.services.storage.artifacts import (
+    dump_json,
+    ensure_artifacts,
+    put_artifact,
+    translation_kind,
+)
 from app.services.storage.maintenance import maintenance_loop, run_maintenance
 from conftest import load_files, load_recording, make_recording
 
@@ -31,15 +37,15 @@ async def age_archive(recording_id: str, days: float) -> None:
 def test_retention_drops_the_audio_of_old_archived_recordings(monkeypatch, tmp_path, bot_api):
     folder = make_recording(monkeypatch, tmp_path, audio=b"lecture" * 100)
     archive_now()
-    asyncio.run(age_archive("rec-1", settings.audio_retention_days + 1))
+    asyncio.run(age_archive("rec-1", settings.effective_local_retention_days + 1))
 
     result = asyncio.run(archive.cleanup_local_audio())
 
-    assert result["removed"] == 1
-    assert result["freed_bytes"] == 700
+    assert result["removed"] == 2
+    assert result["freed_bytes"] >= 700
     assert not (folder / "audio.mp3").exists()
-    # the transcript stays on the server
-    assert (folder / "transcript.json").exists()
+    assert not (folder / "transcript.json").exists()
+    # The text is still available from SQLite.
     assert asyncio.run(load_recording("rec-1")).storage_state == "evicted"
     assert asyncio.run(archive.cleanup_local_audio()) == {"removed": 0, "freed_bytes": 0}
 
@@ -56,7 +62,7 @@ def test_retention_keeps_recent_recordings(monkeypatch, tmp_path, bot_api):
 def test_retention_keeps_recordings_pulled_back_on_purpose(monkeypatch, tmp_path, bot_api):
     folder = make_recording(monkeypatch, tmp_path, audio=b"lecture" * 100)
     archive_now()
-    asyncio.run(age_archive("rec-1", settings.audio_retention_days + 1))
+    asyncio.run(age_archive("rec-1", settings.effective_local_retention_days + 1))
     asyncio.run(archive.restore_recording("rec-1"))
 
     assert asyncio.run(archive.cleanup_local_audio())["removed"] == 0
@@ -66,11 +72,23 @@ def test_retention_keeps_recordings_pulled_back_on_purpose(monkeypatch, tmp_path
 def test_retention_can_be_switched_off(monkeypatch, tmp_path, bot_api):
     folder = make_recording(monkeypatch, tmp_path, audio=b"lecture" * 100)
     archive_now()
-    asyncio.run(age_archive("rec-1", settings.audio_retention_days + 1))
-    monkeypatch.setattr(settings, "audio_retention_days", 0)
+    asyncio.run(age_archive("rec-1", settings.effective_local_retention_days + 1))
+    monkeypatch.setattr(settings, "local_retention_days", -1)
 
     assert asyncio.run(archive.cleanup_local_audio())["removed"] == 0
     assert (folder / "audio.mp3").exists()
+
+
+def test_zero_retention_evicts_immediately_and_removes_the_folder(monkeypatch, tmp_path, bot_api):
+    folder = make_recording(monkeypatch, tmp_path, audio=b"lecture" * 100)
+    archive_now()
+    monkeypatch.setattr(settings, "local_retention_days", 0)
+
+    result = asyncio.run(archive.cleanup_local_audio())
+
+    assert result["removed"] >= 2
+    assert not folder.exists()
+    assert asyncio.run(load_recording("rec-1")).storage_state == "evicted"
 
 
 def test_evicted_audio_is_pulled_back_from_the_channel(monkeypatch, tmp_path, bot_api):
@@ -132,16 +150,16 @@ def test_cache_eviction_is_a_no_op_when_everything_fits(monkeypatch, tmp_path):
 def test_deleting_a_recording_removes_the_messages_from_the_channel(monkeypatch, tmp_path, bot_api):
     make_recording(monkeypatch, tmp_path, audio=b"lecture" * 100)
     archive_now()
-    assert len(bot_api.messages) == 2
+    assert len(bot_api.messages) == 4
 
-    assert asyncio.run(archive.delete_remote_copy("rec-1")) == 2
+    assert asyncio.run(archive.delete_remote_copy("rec-1")) == 4
     assert bot_api.messages == {}
 
 
 def test_delete_remote_copy_survives_a_refusing_api(monkeypatch, tmp_path, bot_api):
     make_recording(monkeypatch, tmp_path, audio=b"lecture" * 100)
     archive_now()
-    bot_api.failures["deleteMessage"] = [(400, {"ok": False, "description": "Bad Request: message can't be deleted"})] * 2
+    bot_api.failures["deleteMessage"] = [(400, {"ok": False, "description": "Bad Request: message can't be deleted"})] * 4
 
     assert asyncio.run(archive.delete_remote_copy("rec-1")) == 0
 
@@ -150,17 +168,17 @@ def test_maintenance_archives_pending_recordings_and_cleans_up(monkeypatch, tmp_
     make_recording(monkeypatch, tmp_path, audio=b"lecture" * 100, name="rec-1")
     make_recording(monkeypatch, tmp_path, audio=b"lecture" * 100, name="rec-2")
     archive_now("rec-1")
-    asyncio.run(age_archive("rec-1", settings.audio_retention_days + 1))
+    asyncio.run(age_archive("rec-1", settings.effective_local_retention_days + 1))
     monkeypatch.setattr(settings, "cache_dir", str(tmp_path / "cache"))
 
     summary = asyncio.run(run_maintenance())
 
     assert summary["archived"] == 1
     assert summary["failed"] == 0
-    assert summary["removed"] == 1
+    assert summary["removed"] == 2
     assert asyncio.run(load_recording("rec-1")).storage_state == "evicted"
     assert asyncio.run(load_recording("rec-2")).storage_state == "tg"
-    assert len(asyncio.run(load_files("rec-2"))) == 2
+    assert len(asyncio.run(load_files("rec-2"))) == 4
 
 
 def test_maintenance_skips_telegram_when_it_is_not_configured(monkeypatch, tmp_path, bot_api):
@@ -169,7 +187,16 @@ def test_maintenance_skips_telegram_when_it_is_not_configured(monkeypatch, tmp_p
 
     summary = asyncio.run(run_maintenance())
 
-    assert summary == {"archived": 0, "failed": 0, "removed": 0, "freed_bytes": 0, "cache_removed": 0}
+    assert summary == {
+        "archived": 0,
+        "artifacts": 0,
+        "failed": 0,
+        "removed": 0,
+        "freed_bytes": 0,
+        "remote_deleted": 0,
+        "remote_manual": 0,
+        "cache_removed": 0,
+    }
     assert bot_api.calls == []
     assert asyncio.run(load_recording("rec-1")).storage_state == "local"
 
@@ -186,6 +213,129 @@ def test_maintenance_keeps_going_when_one_recording_fails(monkeypatch, tmp_path,
     assert summary["archived"] == 1
     assert asyncio.run(load_recording("rec-1")).storage_state == "local"
     assert asyncio.run(load_recording("rec-2")).storage_state == "tg"
+
+
+def test_remote_cleanup_queue_deletes_messages_after_the_row_is_gone(monkeypatch, tmp_path, bot_api):
+    make_recording(monkeypatch, tmp_path, audio=b"lecture" * 100)
+    archive_now()
+
+    async def scenario():
+        assert await archive.enqueue_remote_cleanup("rec-1") == 4
+        async with AsyncSessionLocal() as db:
+            recording = (
+                await db.execute(select(Recording).where(Recording.recording_id == "rec-1"))
+            ).scalar_one()
+            await db.delete(recording)
+            await db.commit()
+
+        summary = await archive.process_remote_cleanup()
+        assert summary["deleted"] == 4
+        assert summary["manual"] == 0
+
+    asyncio.run(scenario())
+    assert bot_api.messages == {}
+
+
+def test_remote_cleanup_marks_old_refused_messages_manual(monkeypatch, tmp_path, bot_api):
+    make_recording(monkeypatch, tmp_path, audio=b"lecture" * 100)
+    archive_now()
+    bot_api.failures["deleteMessage"] = [
+        (400, {"ok": False, "description": "Bad Request: message can't be deleted"})
+    ] * 4
+
+    async def scenario():
+        await archive.enqueue_remote_cleanup("rec-1")
+        async with AsyncSessionLocal() as db:
+            rows = (
+                await db.execute(select(RemoteCleanup))
+            ).scalars().all()
+            for row in rows:
+                row.sent_at = datetime.now(timezone.utc) - timedelta(days=3)
+            await db.commit()
+
+        summary = await archive.process_remote_cleanup()
+        assert summary["manual"] == 4
+        orphans = await archive.list_remote_orphans()
+        assert len(orphans) == 4
+        assert all(row.status == "manual" for row in orphans)
+
+    asyncio.run(scenario())
+
+
+def test_pending_artifact_recordings_lists_only_missing_uploads(monkeypatch, tmp_path, bot_api):
+    make_recording(monkeypatch, tmp_path, audio=b"lecture" * 100)
+
+    async def scenario():
+        async with AsyncSessionLocal() as db:
+            recording = (
+                await db.execute(select(Recording).where(Recording.recording_id == "rec-1"))
+            ).scalar_one()
+            await ensure_artifacts(db, recording)
+
+        assert await archive.pending_artifact_recordings() == ["rec-1"]
+        await archive.archive_artifacts("rec-1")
+        assert await archive.pending_artifact_recordings() == []
+
+    asyncio.run(scenario())
+
+
+def test_archive_reuploads_a_changed_translation(monkeypatch, tmp_path, bot_api):
+    make_recording(monkeypatch, tmp_path, audio=b"lecture" * 100)
+
+    async def scenario():
+        async with AsyncSessionLocal() as db:
+            recording = (
+                await db.execute(select(Recording).where(Recording.recording_id == "rec-1"))
+            ).scalar_one()
+            await ensure_artifacts(db, recording)
+            await put_artifact(
+                db,
+                "rec-1",
+                translation_kind("uk"),
+                dump_json(
+                    {
+                        "version": 1,
+                        "source_sha256": "old",
+                        "sentences": ["Старий."],
+                    }
+                ),
+            )
+
+        await archive.archive_artifacts("rec-1")
+        first = next(
+            row for row in await load_files("rec-1") if row.kind == translation_kind("uk")
+        )
+        first_message = first.tg_message_id
+        first_sha = first.sha256
+
+        async with AsyncSessionLocal() as db:
+            await put_artifact(
+                db,
+                "rec-1",
+                translation_kind("uk"),
+                dump_json(
+                    {
+                        "version": 1,
+                        "source_sha256": "new",
+                        "sentences": ["Новий."],
+                    }
+                ),
+            )
+
+        await archive.archive_artifacts("rec-1")
+        second = next(
+            row for row in await load_files("rec-1") if row.kind == translation_kind("uk")
+        )
+        assert second.sha256 != first_sha
+        assert second.tg_message_id != first_message
+
+        async with AsyncSessionLocal() as db:
+            queued = (
+                await db.execute(select(RemoteCleanup))
+            ).scalars().all()
+        assert any(row.message_id == first_message for row in queued)
+
+    asyncio.run(scenario())
 
 
 def test_the_background_loop_archives_on_its_own(monkeypatch, tmp_path, bot_api):

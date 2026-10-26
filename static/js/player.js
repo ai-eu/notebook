@@ -8,6 +8,7 @@ const downloadLoader = document.getElementById('download-loader');
 const audioHint = document.getElementById('audio-hint');
 
 let sentences = [];
+let activeSentenceIndex = -1;
 
 // Audio that lives in the archive is downloaded on the first listen, which takes a
 // moment: say so instead of leaving a silent player on screen.
@@ -62,6 +63,7 @@ const PARAGRAPH_GAP_SECONDS = 1.5;
 
 function renderTranscript(transcript) {
     const target = document.getElementById('original-sentences') || transcriptContainer;
+    activeSentenceIndex = -1;
 
     // The server renders the column from formatted.txt and ships the very same
     // sentence list here, so the player and the translation share the indexes.
@@ -133,10 +135,24 @@ function renderTranscript(transcript) {
 }
 
 function findActiveSentenceIndex(time) {
-    for (let i = 0; i < sentences.length; i++) {
-        if (time >= sentences[i].start && time < sentences[i].end) {
-            return i;
+    if (!sentences.length) return -1;
+
+    // Binary search: sentences are ordered by start.
+    let low = 0;
+    let high = sentences.length - 1;
+    let candidate = -1;
+    while (low <= high) {
+        const mid = (low + high) >> 1;
+        if (sentences[mid].start <= time) {
+            candidate = mid;
+            low = mid + 1;
+        } else {
+            high = mid - 1;
         }
+    }
+
+    if (candidate >= 0 && time < sentences[candidate].end) {
+        return candidate;
     }
     const last = sentences[sentences.length - 1];
     if (last && last.end > last.start && time >= last.end) {
@@ -177,27 +193,31 @@ function getNextPhraseIdx() {
     return -1;
 }
 
+function sentenceElement(idx) {
+    return document.querySelector(`.sentence-line[data-idx="${idx}"]`);
+}
+
 function highlightSentence(idx) {
-    for (const el of document.querySelectorAll('.sentence-line')) {
-        el.classList.remove('active');
+    if (idx === activeSentenceIndex) return;
+
+    if (activeSentenceIndex >= 0) {
+        sentenceElement(activeSentenceIndex)?.classList.remove('active');
     }
+    activeSentenceIndex = idx;
+
     if (idx >= 0) {
-        const el = document.querySelector(`.sentence-line[data-idx="${idx}"]`);
-        if (el) el.classList.add('active');
+        sentenceElement(idx)?.classList.add('active');
     }
 }
 
 player.addEventListener('timeupdate', () => {
-    const idx = findActiveSentenceIndex(player.currentTime);
-    if (idx >= 0) {
-        highlightSentence(idx);
-    }
+    highlightSentence(findActiveSentenceIndex(player.currentTime));
 });
 
 player.addEventListener('seeked', () => {
     const idx = findActiveSentenceIndex(player.currentTime);
+    highlightSentence(idx);
     if (idx >= 0) {
-        highlightSentence(idx);
         scrollToSentence(idx);
     }
 });

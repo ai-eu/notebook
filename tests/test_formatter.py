@@ -114,6 +114,68 @@ def test_sentence_units_keep_paragraphs_and_interpolate_rephrased_lines():
     assert units[2]["end"] == pytest.approx(2.8125, abs=0.002)
 
 
+def test_sentence_document_maps_segments_and_paragraphs():
+    transcript = {
+        "duration": 10.0,
+        "segments": [
+            {"id": 0, "start": 0.0, "end": 2.0, "text": "Hello world."},
+            {"id": 1, "start": 4.0, "end": 6.0, "text": "Second paragraph."},
+        ],
+    }
+
+    document = formatter.build_sentence_document(transcript)
+
+    assert [unit["text"] for unit in document["sentences"]] == [
+        "Hello world.",
+        "Second paragraph.",
+    ]
+    assert [unit["paragraph"] for unit in document["sentences"]] == [0, 1]
+    assert document["sentences"][0]["start"] == 0.0
+    assert document["sentences"][0]["end"] == 2.0
+    assert document["sentences"][0]["segment_ids"] == [0]
+    assert document["sentences"][1]["start"] == 4.0
+    assert document["sentences"][1]["end"] == 6.0
+    assert document["sentences"][1]["segment_ids"] == [1]
+
+
+def test_sentence_document_keeps_a_sentence_spanning_segments():
+    transcript = {
+        "duration": 2.0,
+        "segments": [
+            {"id": 0, "start": 0.0, "end": 1.0, "text": "hello world"},
+            {"id": 1, "start": 1.0, "end": 2.0, "text": "how are you."},
+        ],
+    }
+
+    document = formatter.build_sentence_document(transcript)
+
+    assert [unit["text"] for unit in document["sentences"]] == [
+        "hello world how are you."
+    ]
+    unit = document["sentences"][0]
+    assert unit["start"] == 0.0
+    assert unit["end"] == 2.0
+    assert unit["segment_ids"] == [0, 1]
+
+
+def test_render_formatted_wraps_long_sentences_without_splitting_units():
+    long_text = " ".join(["word"] * 80)
+    document = {
+        "sentences": [
+            {"text": long_text, "start": 0.0, "end": 1.0, "paragraph": 0},
+        ]
+    }
+
+    rendered = formatter.render_formatted(document, max_line_length=250)
+
+    lines = rendered.splitlines()
+    assert len(lines) > 1
+    assert all(len(line) <= 250 for line in lines)
+    assert " ".join(lines).split() == long_text.split()
+    # The canonical unit is untouched: no comma/clause split was introduced.
+    assert len(document["sentences"]) == 1
+
+
 def test_sentence_units_without_a_transcript_get_no_timings():
     units = formatter.build_sentence_units(None, "First line.\nSecond line.")
 

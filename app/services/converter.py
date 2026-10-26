@@ -1,6 +1,5 @@
 import asyncio
 import json
-import shutil
 from pathlib import Path
 from app.config import settings
 

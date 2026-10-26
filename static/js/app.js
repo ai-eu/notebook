@@ -4,6 +4,7 @@ const progressArea = document.getElementById('progress-area');
 const progressFill = document.getElementById('progress-fill');
 const progressText = document.getElementById('progress-text');
 const recordingsContainer = document.getElementById('recordings');
+const loadMoreButton = document.getElementById('load-more');
 const tagsFilterContainer = document.getElementById('tags-filter');
 const voiceRow = document.getElementById('voice-row');
 const voiceSelect = document.getElementById('voice-select');
@@ -12,6 +13,9 @@ const voiceHint = document.getElementById('voice-hint');
 const ACTIVE_TAG_KEY = 'activeTag';
 let activeTag = localStorage.getItem(ACTIVE_TAG_KEY) || '';
 let currentRecordings = [];
+const PAGE_SIZE = 100;
+let recordingsOffset = 0;
+let hasMoreRecordings = false;
 // A text file waiting for the user to pick a voice before it is uploaded.
 let pendingTtsFile = null;
 
@@ -510,10 +514,16 @@ function renderCards(recordings) {
     }).join('');
 }
 
+function updateLoadMore() {
+    if (!loadMoreButton) return;
+    loadMoreButton.classList.toggle('hidden', !hasMoreRecordings || Boolean(activeTag));
+}
+
 function renderRecordings(recordings) {
     if (!recordingsContainer) return;
     currentRecordings = recordings;
     renderTagFilter(recordings);
+    updateLoadMore();
     const visible = activeTag
         ? recordings.filter(r => (r.tags || '').split(/\s+/).includes(activeTag))
         : recordings;
@@ -526,19 +536,32 @@ function renderRecordings(recordings) {
     renderCards(visible);
 }
 
-async function loadRecordings() {
+async function loadRecordings({ reset = true } = {}) {
     try {
-        const res = await fetch('/api/recordings');
+        if (reset) {
+            recordingsOffset = 0;
+            currentRecordings = [];
+        }
+        const res = await fetch(`/api/recordings?limit=${PAGE_SIZE}&offset=${recordingsOffset}`);
         if (res.status === 401) {
             window.location.href = '/api/auth/login';
             return;
         }
         if (!res.ok) throw new Error('failed');
         const data = await res.json();
-        renderRecordings(data);
+        currentRecordings = currentRecordings.concat(data);
+        recordingsOffset += data.length;
+        hasMoreRecordings = data.length === PAGE_SIZE;
+        renderRecordings(currentRecordings);
     } catch (e) {
         if (recordingsContainer) recordingsContainer.innerHTML = '<p class="error">Could not load the list.</p>';
+        hasMoreRecordings = false;
+        updateLoadMore();
     }
+}
+
+if (loadMoreButton) {
+    loadMoreButton.addEventListener('click', () => loadRecordings({ reset: false }));
 }
 
 function closeTagsPopups() {

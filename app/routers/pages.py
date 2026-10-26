@@ -7,9 +7,13 @@ from app.database import get_db
 from app.auth import get_session_user
 from app.config import settings
 from app.models import Recording
-from app.services.formatter import build_sentence_units, clean_transcript
+from app.services.storage.artifacts import (
+    KIND_FORMATTED,
+    KIND_SENTENCES,
+    KIND_TRANSCRIPT,
+    ensure_artifacts,
+)
 from app.templates import templates
-from app.utils import resolve_recording_path
 
 router = APIRouter(tags=["pages"])
 
@@ -30,8 +34,9 @@ async def index(request: Request, db: AsyncSession = Depends(get_db)):
     if not user:
         return RedirectResponse("/api/auth/login", status_code=303)
     return templates.TemplateResponse(
+        request,
         "index.html",
-        {"request": request, "user": user, "tts_enabled": settings.tts_enabled},
+        {"user": user, "tts_enabled": settings.tts_enabled},
     )
 
 
@@ -54,29 +59,33 @@ async def transcript_page(
     if not recording:
         raise HTTPException(status_code=404, detail="Recording not found")
 
+    artifacts = await ensure_artifacts(db, recording)
+
     transcript = None
+    if KIND_TRANSCRIPT in artifacts:
+        try:
+            transcript = json.loads(artifacts[KIND_TRANSCRIPT])
+        except (TypeError, ValueError):
+            transcript = None
+
     sentence_units: list[dict] = []
-    transcript_path = resolve_recording_path(recording.folder_path) / "transcript.json"
-    formatted_path = resolve_recording_path(recording.folder_path) / "formatted.txt"
-    if transcript_path.exists():
-        transcript = clean_transcript(json.loads(transcript_path.read_text(encoding="utf-8")))
-    if formatted_path.exists():
-        # The lines of formatted.txt are the single source of sentences: the page
-        # renders them with timings and the translation translates the very same list.
-        sentence_units = build_sentence_units(
-            transcript, formatted_path.read_text(encoding="utf-8")
-        )
+    if KIND_SENTENCES in artifacts:
+        try:
+            document = json.loads(artifacts[KIND_SENTENCES])
+            sentence_units = document.get("sentences") or []
+        except (AttributeError, TypeError, ValueError):
+            sentence_units = []
 
     return templates.TemplateResponse(
+        request,
         "transcript.html",
         {
-            "request": request,
             "user": user,
             "recording": recording,
             "transcript": transcript,
             "sentence_units": sentence_units,
             "original_paragraphs": _group_units(sentence_units),
-            "txt_ready": formatted_path.exists(),
+            "txt_ready": KIND_FORMATTED in artifacts or bool(sentence_units),
             "translation_enabled": settings.translation_enabled,
             "translation_languages": settings.translation_target_languages,
             # Short codes keep the dropdown unobtrusive (pt-PT shows as "pt").

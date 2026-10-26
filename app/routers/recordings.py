@@ -1,20 +1,27 @@
-import json
 import re
 from pathlib import Path
 from fastapi import APIRouter, Depends, HTTPException, Query, status
-from fastapi.responses import FileResponse, JSONResponse, Response
+from fastapi.responses import FileResponse, Response
 from pydantic import BaseModel
-from app.config import settings
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from app.database import get_db
 from app.auth import require_user
-from app.models import User, Recording
-from app.services.formatter import clean_transcript, format_transcript
-from app.services.groq import resolve_groq_key
+from app.models import Recording, RecordingArtifact, User
+from app.services.formatter import MAX_LINE_LENGTH, render_formatted
 from app.services.processing import get_processing_progress
 from app.services.tts import get_tts_progress
-from app.services.storage.archive import delete_remote_copy
+from app.services.storage.archive import (
+    enqueue_remote_cleanup,
+    process_remote_cleanup,
+)
+from app.services.storage.artifacts import (
+    KIND_FORMATTED,
+    ensure_artifacts,
+    load_sentences,
+    load_transcript,
+    save_formatted,
+)
 from app.services.storage.cache import drop as drop_cached
 from app.services.storage.cache import ensure_cached
 from app.utils import resolve_recording_path, safe_delete
@@ -22,8 +29,13 @@ from app.utils import resolve_recording_path, safe_delete
 router = APIRouter(prefix="/api", tags=["recordings"])
 
 
-def _recording_to_dict(recording: Recording, include_transcript: bool = False) -> dict:
-    folder = resolve_recording_path(recording.folder_path)
+def _recording_to_dict(
+    recording: Recording,
+    *,
+    txt_ready: bool,
+    include_transcript: bool = False,
+    transcript: dict | None = None,
+) -> dict:
     data = {
         "recording_id": recording.recording_id,
         "original_filename": recording.original_filename,
@@ -34,17 +46,37 @@ def _recording_to_dict(recording: Recording, include_transcript: bool = False) -
         "error_message": recording.error_message,
         "tags": recording.tags or "",
         "comment": recording.comment,
-        "txt_ready": (folder / "formatted.txt").exists(),
+        "txt_ready": txt_ready,
     }
     if include_transcript:
-        transcript_path = folder / "transcript.json"
-        if transcript_path.exists():
-            data["transcript"] = clean_transcript(
-                json.loads(transcript_path.read_text(encoding="utf-8"))
-            )
-        else:
-            data["transcript"] = None
+        data["transcript"] = transcript
     return data
+
+
+async def _formatted_recording_ids(
+    db: AsyncSession, recording_ids: list[str]
+) -> set[str]:
+    if not recording_ids:
+        return set()
+    rows = await db.execute(
+        select(RecordingArtifact.recording_id).where(
+            RecordingArtifact.kind == KIND_FORMATTED,
+            RecordingArtifact.recording_id.in_(recording_ids),
+        )
+    )
+    return set(rows.scalars())
+
+
+async def _has_formatted(db: AsyncSession, recording_id: str) -> bool:
+    return (
+        await db.scalar(
+            select(RecordingArtifact.id).where(
+                RecordingArtifact.recording_id == recording_id,
+                RecordingArtifact.kind == KIND_FORMATTED,
+            )
+        )
+        is not None
+    )
 
 
 async def _get_user_recording(recording_id: str, user: User, db: AsyncSession) -> Recording:
@@ -62,6 +94,8 @@ async def _get_user_recording(recording_id: str, user: User, db: AsyncSession) -
 
 @router.get("/recordings")
 async def list_recordings(
+    limit: int = Query(100, ge=1, le=500),
+    offset: int = Query(0, ge=0),
     user: User = Depends(require_user),
     db: AsyncSession = Depends(get_db),
 ):
@@ -69,9 +103,20 @@ async def list_recordings(
         select(Recording)
         .where(Recording.user_id == user.id)
         .order_by(Recording.created_at.desc())
+        .limit(limit)
+        .offset(offset)
     )
     recordings = result.scalars().all()
-    return [_recording_to_dict(r) for r in recordings]
+    formatted_ids = await _formatted_recording_ids(
+        db, [recording.recording_id for recording in recordings]
+    )
+    return [
+        _recording_to_dict(
+            recording,
+            txt_ready=recording.recording_id in formatted_ids,
+        )
+        for recording in recordings
+    ]
 
 
 @router.get("/recordings/{recording_id}")
@@ -81,7 +126,13 @@ async def get_recording(
     db: AsyncSession = Depends(get_db),
 ):
     recording = await _get_user_recording(recording_id, user, db)
-    return _recording_to_dict(recording, include_transcript=True)
+    artifacts = await ensure_artifacts(db, recording)
+    return _recording_to_dict(
+        recording,
+        txt_ready=KIND_FORMATTED in artifacts,
+        include_transcript=True,
+        transcript=await load_transcript(db, recording.recording_id),
+    )
 
 
 @router.get("/recordings/{recording_id}/status")
@@ -91,13 +142,13 @@ async def get_recording_status(
     db: AsyncSession = Depends(get_db),
 ):
     recording = await _get_user_recording(recording_id, user, db)
-    formatted_path = resolve_recording_path(recording.folder_path) / "formatted.txt"
+    legacy_formatted = resolve_recording_path(recording.folder_path) / "formatted.txt"
     result = {
         "recording_id": recording.recording_id,
         "status": recording.status,
         "duration": recording.duration,
         "error_message": recording.error_message,
-        "txt_ready": formatted_path.exists(),
+        "txt_ready": await _has_formatted(db, recording.recording_id) or legacy_formatted.exists(),
     }
     if recording.kind == "tts":
         result["kind"] = "tts"
@@ -131,7 +182,10 @@ async def update_recording_tags(
     recording.tags = _normalize_tags(payload.tags) or None
     recording.comment = payload.comment.strip() or None
     await db.commit()
-    return _recording_to_dict(recording)
+    return _recording_to_dict(
+        recording,
+        txt_ready=await _has_formatted(db, recording.recording_id),
+    )
 
 
 @router.get("/recordings/{recording_id}/audio")
@@ -160,12 +214,13 @@ async def delete_recording(
     db: AsyncSession = Depends(get_db),
 ):
     recording = await _get_user_recording(recording_id, user, db)
-    # Drop the copies in the channel and in the cache before the row goes away.
-    await delete_remote_copy(recording_id)
+    # Queue channel messages before the StoredFile rows disappear with the recording.
+    await enqueue_remote_cleanup(recording_id)
     drop_cached(recording_id)
     safe_delete(resolve_recording_path(recording.folder_path))
     await db.delete(recording)
     await db.commit()
+    await process_remote_cleanup()
     return {"deleted": True}
 
 
@@ -179,41 +234,28 @@ def _txt_filename(recording: Recording) -> str:
 @router.get("/recordings/{recording_id}/download")
 async def download_recording(
     recording_id: str,
-    smart: bool = Query(False, description="Use Groq to split long lines"),
-    refresh: bool = Query(False, description="Recreate the cache, ignoring the saved formatted text"),
+    smart: bool = Query(False, description="Deprecated: formatting is precomputed"),
+    refresh: bool = Query(False, description="Re-render the text from the saved sentences"),
     user: User = Depends(require_user),
     db: AsyncSession = Depends(get_db),
 ):
+    _ = smart
     recording = await _get_user_recording(recording_id, user, db)
-    transcript_path = resolve_recording_path(recording.folder_path) / "transcript.json"
-    if not transcript_path.exists():
-        raise HTTPException(status_code=404, detail="Transcript not found")
+    artifacts = await ensure_artifacts(db, recording)
 
-    use_groq = smart or settings.smart_format
-    cache_name = "formatted-smart.txt" if use_groq else "formatted.txt"
-    cache_path = resolve_recording_path(recording.folder_path) / cache_name
+    if refresh:
+        document = await load_sentences(db, recording.recording_id)
+        if document:
+            artifacts[KIND_FORMATTED] = render_formatted(
+                document, max_line_length=MAX_LINE_LENGTH
+            )
+            await save_formatted(
+                db, recording.recording_id, artifacts[KIND_FORMATTED]
+            )
 
-    formatted = None
-    if not refresh and cache_path.exists():
-        try:
-            transcript_mtime = transcript_path.stat().st_mtime
-            cache_mtime = cache_path.stat().st_mtime
-            if cache_mtime >= transcript_mtime:
-                formatted = cache_path.read_text(encoding="utf-8")
-        except OSError:
-            pass
-
+    formatted = artifacts.get(KIND_FORMATTED)
     if formatted is None:
-        transcript = json.loads(transcript_path.read_text(encoding="utf-8"))
-        formatted = await format_transcript(
-            transcript,
-            api_key=resolve_groq_key(user),
-            use_groq=use_groq,
-        )
-        try:
-            cache_path.write_text(formatted, encoding="utf-8")
-        except OSError:
-            pass
+        raise HTTPException(status_code=404, detail="Transcript not found")
 
     filename = _txt_filename(recording)
 

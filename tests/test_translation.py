@@ -131,7 +131,6 @@ def test_translate_no_formatted_txt_returns_404():
             folder = settings.data_dir_absolute / str(user_id) / "rec-no-fmt"
             folder.mkdir(parents=True, exist_ok=True)
             (folder / "audio.mp3").write_bytes(b"lecture")
-            (folder / "transcript.json").write_text('{"text": "hi", "segments": []}', encoding="utf-8")
             async with AsyncSessionLocal() as db:
                 db.add(
                     Recording(
@@ -180,17 +179,21 @@ def test_translate_sentences_function_batches(monkeypatch):
     assert fake.requests[0]["headers"]["Authorization"] == f"Bearer {KEY}"
 
 
-def test_translate_sentences_pads_when_model_returns_fewer(monkeypatch):
-    """If Groq returns fewer lines than requested, pad with empty strings."""
+def test_translate_sentences_rejects_a_wrong_line_count(monkeypatch):
+    """A mismatched response is retried, then reported instead of padded silently."""
     sentences = ["First.", "Second.", "Third."]
     fake = FakeAsyncClient(
         FakeResponse(200, {"choices": [{"message": {"content": "Перше.\nДруге."}}]})
     )
     monkeypatch.setattr(formatter.httpx, "AsyncClient", lambda **kwargs: fake)
 
-    result = asyncio.run(formatter.translate_sentences(sentences, "uk", KEY))
+    try:
+        asyncio.run(formatter.translate_sentences(sentences, "uk", KEY))
+        assert False, "Expected TranslationError"
+    except formatter.TranslationError as exc:
+        assert "2 lines for 3 sentences" in str(exc)
 
-    assert result == ["Перше.", "Друге.", ""]
+    assert len(fake.requests) == 2
 
 
 def test_translate_sentences_no_key_raises():

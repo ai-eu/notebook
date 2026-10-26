@@ -109,7 +109,7 @@ def test_other_failures_keep_the_key_marked_as_valid(monkeypatch, tmp_path):
     async def fake_transcribe(path, api_key, language=None):
         raise ValueError("Groq API error 500: boom")
 
-    _stub_media_pipeline(monkeypatch, tmp_path, fake_transcribe)
+    folder = _stub_media_pipeline(monkeypatch, tmp_path, fake_transcribe)
 
     async def scenario():
         _, recording_id = await _create_recording()
@@ -118,6 +118,43 @@ def test_other_failures_keep_the_key_marked_as_valid(monkeypatch, tmp_path):
         assert recording.status == "error"
         assert "500" in recording.error_message
         assert user.key_valid is True
+        # The original is kept so the user can retry without uploading again.
+        assert (folder / "original.tmp").exists()
+
+    asyncio.run(scenario())
+
+
+def test_chunks_are_removed_after_processing(monkeypatch, tmp_path):
+    async def fake_transcribe(path, api_key, language=None):
+        return {"text": "hi", "segments": [{"start": 0, "end": 1, "text": "hi"}], "duration": 5.0}
+
+    folder = _stub_media_pipeline(monkeypatch, tmp_path, fake_transcribe)
+
+    async def fake_split(path, output_dir, minutes, passthrough=False):
+        output_dir.mkdir(parents=True, exist_ok=True)
+        chunks = []
+        for index in range(2):
+            chunk = output_dir / f"chunk_{index:03d}.mp3"
+            chunk.write_bytes(b"chunk")
+            chunks.append(chunk)
+        return chunks
+
+    async def fake_chunks(paths, api_key, progress_cb=None):
+        if progress_cb:
+            progress_cb(len(paths), len(paths))
+        return {"text": "hi", "segments": [{"start": 0, "end": 1, "text": "hi"}], "duration": 5.0}
+
+    monkeypatch.setattr(processing, "get_file_size_mb", lambda path: 100.0)
+    monkeypatch.setattr(processing, "split_audio", fake_split)
+    monkeypatch.setattr(processing, "transcribe_chunks", fake_chunks)
+
+    async def scenario():
+        _, recording_id = await _create_recording()
+        await processing.process_recording(recording_id)
+        recording, _ = await _load(recording_id)
+        assert recording.status == "done"
+        assert not (folder / "chunks").exists()
+        assert not (folder / "original.tmp").exists()
 
     asyncio.run(scenario())
 
@@ -140,7 +177,7 @@ def test_a_finished_recording_is_copied_into_the_channel(monkeypatch, tmp_path, 
         assert recording.status == "done"
         assert recording.storage_state == "tg"
         assert recording.archived_at is not None
-        assert bot_api.calls.count("sendDocument") == 3
+        assert bot_api.calls.count("sendDocument") == 4
         async with AsyncSessionLocal() as db:
             files = (
                 await db.execute(select(StoredFile).where(StoredFile.recording_id == recording_id))
@@ -148,6 +185,7 @@ def test_a_finished_recording_is_copied_into_the_channel(monkeypatch, tmp_path, 
         assert {(row.kind, row.idx) for row in files} == {
             ("audio", 0),
             ("transcript", 0),
+            ("sentences", 0),
             ("formatted", 0),
         }
 
@@ -168,6 +206,147 @@ def test_a_failed_transcription_is_not_archived(monkeypatch, tmp_path, bot_api):
         assert recording.status == "error"
         assert recording.storage_state == "local"
         assert bot_api.calls == []
+
+    asyncio.run(scenario())
+
+
+def test_recovery_requeues_a_processing_recording(monkeypatch, tmp_path):
+    folder = tmp_path / "recording"
+    folder.mkdir()
+    (folder / "original.tmp").write_bytes(b"original")
+    monkeypatch.setattr(processing, "resolve_recording_path", lambda path: folder)
+
+    submitted = []
+    calls = []
+
+    class FakeRunner:
+        def submit(self, factory):
+            submitted.append(factory)
+
+    async def fake_process(recording_id, **kwargs):
+        calls.append(kwargs)
+
+    monkeypatch.setattr(processing, "job_runner", FakeRunner())
+    monkeypatch.setattr(processing, "process_recording", fake_process)
+
+    async def scenario():
+        async with AsyncSessionLocal() as db:
+            user = User(groq_key=KEY, label="Alice")
+            db.add(user)
+            await db.commit()
+            db.add(
+                Recording(
+                    user_id=user.id,
+                    recording_id="rec-recover",
+                    folder_path="1/rec-recover",
+                    original_filename="note.m4a",
+                    status="processing",
+                )
+            )
+            await db.commit()
+
+        summary = await processing.recover_interrupted_jobs()
+        assert summary["requeued"] == 1
+        assert len(submitted) == 1
+
+        async with AsyncSessionLocal() as db:
+            recording = (
+                await db.execute(select(Recording).where(Recording.recording_id == "rec-recover"))
+            ).scalar_one()
+            assert recording.status == "pending"
+
+        for factory in submitted:
+            await factory()
+        assert calls == [{}]
+
+    asyncio.run(scenario())
+
+
+def test_recovery_resumes_from_audio_after_a_crash(monkeypatch, tmp_path):
+    folder = tmp_path / "recording"
+    folder.mkdir()
+    (folder / "audio.mp3").write_bytes(b"mp3")
+    monkeypatch.setattr(processing, "resolve_recording_path", lambda path: folder)
+
+    submitted = []
+    calls = []
+
+    class FakeRunner:
+        def submit(self, factory):
+            submitted.append(factory)
+
+    async def fake_process(recording_id, **kwargs):
+        calls.append(kwargs)
+
+    monkeypatch.setattr(processing, "job_runner", FakeRunner())
+    monkeypatch.setattr(processing, "process_recording", fake_process)
+
+    async def scenario():
+        async with AsyncSessionLocal() as db:
+            user = User(groq_key=KEY + "b", label="Bob")
+            db.add(user)
+            await db.commit()
+            db.add(
+                Recording(
+                    user_id=user.id,
+                    recording_id="rec-resume",
+                    folder_path="1/rec-resume",
+                    original_filename="note.m4a",
+                    status="processing",
+                )
+            )
+            await db.commit()
+
+        summary = await processing.recover_interrupted_jobs()
+        assert summary["requeued"] == 1
+        for factory in submitted:
+            await factory()
+        assert calls == [{"resume_audio": True}]
+
+    asyncio.run(scenario())
+
+
+def test_recovery_gives_up_after_too_many_attempts(monkeypatch, tmp_path):
+    folder = tmp_path / "recording"
+    folder.mkdir()
+    (folder / "original.tmp").write_bytes(b"original")
+    monkeypatch.setattr(processing, "resolve_recording_path", lambda path: folder)
+    monkeypatch.setattr(settings, "max_job_attempts", 3)
+
+    submitted = []
+
+    class FakeRunner:
+        def submit(self, factory):
+            submitted.append(factory)
+
+    monkeypatch.setattr(processing, "job_runner", FakeRunner())
+
+    async def scenario():
+        async with AsyncSessionLocal() as db:
+            user = User(groq_key=KEY + "c", label="Carol")
+            db.add(user)
+            await db.commit()
+            db.add(
+                Recording(
+                    user_id=user.id,
+                    recording_id="rec-failed",
+                    folder_path="1/rec-failed",
+                    original_filename="note.m4a",
+                    status="processing",
+                    attempts=3,
+                )
+            )
+            await db.commit()
+
+        summary = await processing.recover_interrupted_jobs()
+        assert summary["failed"] == 1
+        assert submitted == []
+
+        async with AsyncSessionLocal() as db:
+            recording = (
+                await db.execute(select(Recording).where(Recording.recording_id == "rec-failed"))
+            ).scalar_one()
+            assert recording.status == "error"
 
     asyncio.run(scenario())
 

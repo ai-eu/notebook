@@ -5,12 +5,13 @@ from datetime import datetime, timezone
 from sqlalchemy import select
 from app.config import settings
 from app.database import init_db, AsyncSessionLocal
-from app.models import User
+from app.models import Recording, RemoteCleanup, User
 from app.auth import delete_user_sessions
 from app.services.groq import is_groq_key_format, mask_key, validate_key
 from app.services.storage import archive, cache, telegram
+from app.services.storage.artifacts import ensure_artifacts
 from app.services.storage.cache import cache_stats
-from app.utils import user_data_dir, safe_delete
+from app.utils import resolve_recording_path, user_data_dir, safe_delete
 
 
 async def ensure_tables():
@@ -79,8 +80,22 @@ async def delete_user(user_id: int, purge_files: bool = False):
         if not user:
             print(f"User {user_id} not found.")
             return
-        await db.delete(user)
-        await db.commit()
+        recording_ids = list(
+            (
+                await db.execute(
+                    select(Recording.recording_id).where(Recording.user_id == user_id)
+                )
+            ).scalars()
+        )
+    # Queue channel messages before the cascade removes StoredFile rows.
+    for recording_id in recording_ids:
+        await archive.enqueue_remote_cleanup(recording_id)
+    async with AsyncSessionLocal() as db:
+        user = await db.get(User, user_id)
+        if user:
+            await db.delete(user)
+            await db.commit()
+    await archive.process_remote_cleanup(limit=500)
     folder = user_data_dir(user_id)
     if purge_files:
         safe_delete(folder)
@@ -150,11 +165,14 @@ async def tg_status():
     print(f"Files in the channel: {summary['files']} ({_human_mb(summary['bytes_remote'])})")
     cache = cache_stats()
     print(f"Audio cache: {cache['files']} file(s) ({_human_mb(cache['bytes'])}, limit {settings.cache_max_mb} MB)")
-    retention = f"{settings.audio_retention_days} day(s)" if settings.audio_retention_days > 0 else "disabled"
-    print(f"Local audio retention: {retention}")
+    retention_days = settings.effective_local_retention_days
+    retention = f"{retention_days} day(s)" if retention_days >= 0 else "disabled"
+    print(f"Local file retention: {retention}")
     if telegram.is_configured():
         pending = await archive.pending_recordings()
-        print(f"Waiting to be archived: {len(pending)}")
+        print(f"Audio waiting to be archived: {len(pending)}")
+        pending_text = await archive.pending_artifact_recordings()
+        print(f"Artifacts waiting to be archived: {len(pending_text)}")
 
 
 async def tg_backfill(limit: int | None = None):
@@ -175,7 +193,10 @@ async def tg_backfill(limit: int | None = None):
             failed += 1
             print(f"{recording_id}: failed — {exc}")
             continue
-        print(f"{recording_id}: {result['uploaded']} of {result['parts'] + 1} file(s) uploaded")
+        print(
+            f"{recording_id}: {result['uploaded']} file(s) uploaded, "
+            f"{result['parts']} audio part(s)"
+        )
     print(f"Done. Failed: {failed}")
 
 
@@ -217,15 +238,125 @@ async def tg_restore(recording_id: str, force: bool = False):
 
 async def tg_cleanup(dry_run: bool = False):
     await ensure_tables()
-    retention = settings.audio_retention_days
-    if retention <= 0:
-        print("AUDIO_RETENTION_DAYS is 0, so local audio is never dropped.")
+    retention = settings.effective_local_retention_days
+    if retention < 0:
+        print("LOCAL_RETENTION_DAYS is negative, so local files are never dropped.")
         return
     result = await archive.cleanup_local_audio(dry_run=dry_run)
     verb = "Would drop" if dry_run else "Dropped"
     print(f"{verb} {result['removed']} local audio file(s), {_human_mb(result['freed_bytes'])}")
     cache_result = await cache.cleanup_cache()
     print(f"Cache: {cache_result['removed']} file(s) removed, {_human_mb(cache_result['freed_bytes'])}")
+
+
+async def storage_status():
+    await tg_status()
+
+
+async def storage_backfill(
+    limit: int | None = None,
+    dry_run: bool = False,
+    evict: bool = True,
+):
+    await ensure_tables()
+    if not telegram.is_configured():
+        print("Telegram is not configured: set TELEGRAM_ENABLED=true, TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID.")
+        return
+
+    async with AsyncSessionLocal() as db:
+        rows = (
+            await db.execute(
+                select(Recording)
+                .where(Recording.status == "done")
+                .order_by(Recording.created_at)
+            )
+        ).scalars().all()
+
+    if limit:
+        rows = rows[:limit]
+
+    uploaded = 0
+    evicted = 0
+    skipped = 0
+    failed = 0
+    for recording in rows:
+        folder = resolve_recording_path(recording.folder_path)
+        has_audio = (folder / "audio.mp3").exists()
+        if dry_run:
+            print(
+                f"{recording.recording_id}: audio={'yes' if has_audio else 'no'} "
+                f"verified={'yes' if recording.archive_verified_at else 'no'} "
+                f"state={recording.storage_state or 'local'}"
+            )
+            continue
+
+        try:
+            async with AsyncSessionLocal() as db:
+                current = (
+                    await db.execute(
+                        select(Recording).where(
+                            Recording.recording_id == recording.recording_id
+                        )
+                    )
+                ).scalar_one_or_none()
+                if current is None:
+                    skipped += 1
+                    continue
+                await ensure_artifacts(db, current)
+
+            if has_audio:
+                await archive.archive_recording(recording.recording_id)
+            else:
+                await archive.archive_artifacts(recording.recording_id)
+            uploaded += 1
+
+            if evict:
+                result = await archive.evict_local_files(recording.recording_id)
+                if result["removed"]:
+                    evicted += 1
+        except (telegram.TelegramError, OSError, ValueError) as exc:
+            failed += 1
+            print(f"{recording.recording_id}: failed — {exc}")
+
+    if dry_run:
+        print(f"Dry run: {len(rows)} recording(s) inspected; nothing changed.")
+    else:
+        print(
+            f"Backfill done: archived={uploaded}, evicted={evicted}, "
+            f"skipped={skipped}, failed={failed}"
+        )
+
+
+async def storage_orphans(retry: bool = False):
+    await ensure_tables()
+    if retry:
+        async with AsyncSessionLocal() as db:
+            rows = (
+                await db.execute(
+                    select(RemoteCleanup).where(
+                        RemoteCleanup.status == "manual"
+                    )
+                )
+            ).scalars().all()
+            for row in rows:
+                row.status = "pending"
+            await db.commit()
+        summary = await archive.process_remote_cleanup(limit=200)
+        print(
+            f"Retried: deleted={summary['deleted']}, failed={summary['failed']}, "
+            f"manual={summary['manual']}"
+        )
+
+    orphans = await archive.list_remote_orphans()
+    if not orphans:
+        print("No orphaned messages.")
+        return
+    print(f"{len(orphans)} message(s) require manual deletion in the channel:")
+    for row in orphans:
+        print(
+            f"  recording={row.recording_id} chat={row.chat_id or '-'} "
+            f"message={row.message_id} attempts={row.attempts} error={row.last_error or '-'}"
+        )
 
 
 def main():
@@ -274,6 +405,30 @@ def main():
     p_cleanup = sub.add_parser("tg-cleanup", help="Drop local audio that is already in the channel")
     p_cleanup.add_argument("--dry-run", action="store_true", help="Only report what would be dropped")
 
+    sub.add_parser("storage-status", help="Show Telegram-first storage status")
+    p_sb = sub.add_parser(
+        "storage-backfill",
+        help="Import legacy artifacts, archive everything and optionally evict local files",
+    )
+    p_sb.add_argument("--limit", type=int, default=None, help="Stop after this many recordings")
+    p_sb.add_argument("--dry-run", action="store_true", help="Only report what would be done")
+    p_sb.add_argument(
+        "--no-evict",
+        action="store_true",
+        help="Upload but keep local files (useful for a staged rollout)",
+    )
+
+    p_sv = sub.add_parser("storage-verify", help="Check archived files and refresh expired file ids")
+    p_sv.add_argument("recording_id", nargs="?", default=None)
+    p_sv.add_argument("--no-repair", action="store_true", help="Only report problems")
+
+    p_sr = sub.add_parser("storage-restore", help="Download a recording back from the channel")
+    p_sr.add_argument("recording_id")
+    p_sr.add_argument("--force", action="store_true", help="Overwrite an existing local copy")
+
+    p_so = sub.add_parser("storage-orphans", help="List or retry messages Telegram refused to delete")
+    p_so.add_argument("--retry", action="store_true", help="Retry manual entries once")
+
     args = parser.parse_args()
     if args.cmd == "add-user":
         asyncio.run(add_user(args.label, args.key, verify=not args.no_verify))
@@ -297,6 +452,20 @@ def main():
         asyncio.run(tg_restore(args.recording_id, force=args.force))
     elif args.cmd == "tg-cleanup":
         asyncio.run(tg_cleanup(dry_run=args.dry_run))
+    elif args.cmd == "storage-status":
+        asyncio.run(storage_status())
+    elif args.cmd == "storage-backfill":
+        asyncio.run(
+            storage_backfill(
+                args.limit, dry_run=args.dry_run, evict=not args.no_evict
+            )
+        )
+    elif args.cmd == "storage-verify":
+        asyncio.run(tg_verify(args.recording_id, repair=not args.no_repair))
+    elif args.cmd == "storage-restore":
+        asyncio.run(tg_restore(args.recording_id, force=args.force))
+    elif args.cmd == "storage-orphans":
+        asyncio.run(storage_orphans(retry=args.retry))
 
 
 if __name__ == "__main__":

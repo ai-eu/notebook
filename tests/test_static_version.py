@@ -11,7 +11,6 @@ def test_static_version_is_stable_and_meaningful():
 
 
 def test_version_changes_when_a_file_changes(tmp_path, monkeypatch):
-    import importlib
 
     from app import static_version as sv
 

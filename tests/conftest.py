@@ -22,7 +22,8 @@ os.chdir(Path(__file__).resolve().parent.parent)
 from app.config import settings  # noqa: E402
 from app.database import Base, engine, AsyncSessionLocal  # noqa: E402
 from app.models import Recording, StoredFile, User  # noqa: E402
-from app.services.storage import archive, telegram  # noqa: E402
+from app.services.storage import archive, telegram
+from app.services.storage import artifacts as artifacts_store  # noqa: E402
 
 
 class FakeResponse:
@@ -92,6 +93,7 @@ class FakeBotApi:
         self.failures: dict[str, list[tuple[int, dict]]] = {}
         self.pauses = None
         self._next_message_id = 100
+        self._next_file_id = 0
 
     def transport(self) -> httpx.MockTransport:
         return httpx.MockTransport(self.handle)
@@ -144,7 +146,8 @@ class FakeBotApi:
 
     def _store(self, chat_id: int, content: bytes, caption: str) -> dict:
         self._next_message_id += 1
-        file_id = f"file-{len(self.files) + 1}"
+        self._next_file_id += 1
+        file_id = f"file-{self._next_file_id}"
         self.files[file_id] = content
         self.file_paths[f"documents/{file_id}"] = file_id
         message = {
@@ -217,6 +220,11 @@ def make_recording(monkeypatch, tmp_path, *, audio: bytes, name: str = "rec-1", 
 
     asyncio.run(_create())
     monkeypatch.setattr(archive, "resolve_recording_path", lambda path: tmp_path / Path(path).name)
+    monkeypatch.setattr(
+        artifacts_store,
+        "resolve_recording_path",
+        lambda path: tmp_path / Path(path).name,
+    )
     return folder
 
 

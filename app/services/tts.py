@@ -6,7 +6,7 @@ import shutil
 from pathlib import Path
 
 from app.config import settings
-from app.services.converter import get_duration, _run_ffmpeg
+from app.services.converter import _run_ffmpeg
 
 
 class TTSAuthError(Exception):

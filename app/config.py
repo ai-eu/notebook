@@ -2,8 +2,9 @@ from pathlib import Path
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
-# Load .env relative to the repository root, not the server's cwd.
-_ENV_FILE = Path(__file__).resolve().parent.parent / ".env"
+# All relative paths are anchored to the repository root, not the process cwd.
+BASE_DIR = Path(__file__).resolve().parent.parent
+_ENV_FILE = BASE_DIR / ".env"
 
 
 class Settings(BaseSettings):
@@ -17,6 +18,12 @@ class Settings(BaseSettings):
     database_url: str = "sqlite+aiosqlite:///app.db"
     data_dir: Path = Path("data")
     upload_max_size_mb: int = 500
+    # Processing/TTS jobs share this limit so a burst of uploads cannot start
+    # several ffmpeg/denoise/Groq pipelines at once.
+    max_concurrent_jobs: int = 1
+    max_job_attempts: int = 3
+    # Groq allows a few audio chunks in parallel; keep 1 when rate limits matter.
+    transcription_concurrency: int = 1
     target_mp3_kbps: int = 48
     mp3_passthrough_kbps: int = 196
     target_chunk_mb: int = 22
@@ -82,8 +89,9 @@ class Settings(BaseSettings):
     telegram_timeout: float = 60.0
     telegram_download_timeout: float = 300.0
     telegram_max_retries: int = 3
-    # Days a local audio file is kept after it is safely stored in the channel (0 = forever).
-    # Transcripts always stay on the server.
+    # Days local files are kept after the archive is verified. 0 = evict immediately,
+    # -1 = never evict (local mode). ``audio_retention_days`` is the deprecated name.
+    local_retention_days: int | None = None
     audio_retention_days: int = 14
     # Folder for audio pulled back from the channel, relative to DATA_DIR
     cache_dir: str = ".cache"
@@ -94,10 +102,21 @@ class Settings(BaseSettings):
     translation_target_languages: list[str] = ["en", "uk", "pt-PT", "es"]
     translation_default_language: str = "uk"
     translation_batch_size: int = 10
+    translation_batch_chars: int = 3000
+    translation_concurrency: int = 2
+
+    @property
+    def effective_local_retention_days(self) -> int:
+        if self.local_retention_days is not None:
+            return self.local_retention_days
+        return self.audio_retention_days
 
     @property
     def data_dir_absolute(self) -> Path:
-        return (Path.cwd() / self.data_dir).resolve()
+        path = Path(self.data_dir)
+        if not path.is_absolute():
+            path = BASE_DIR / path
+        return path.resolve()
 
     @property
     def upload_max_size_bytes(self) -> int:

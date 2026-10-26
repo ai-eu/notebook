@@ -1,11 +1,11 @@
-import json
+import asyncio
 import mimetypes
 from pathlib import Path
-import httpx
 from app.config import settings
 from app.services.converter import get_duration
 from app.services.formatter import clean_transcript
 from app.services.groq import GROQ_API_BASE, GroqAuthError
+from app.services.http import post_with_retries
 
 
 GROQ_TRANSCRIPTION_URL = f"{GROQ_API_BASE}/audio/transcriptions"
@@ -61,16 +61,16 @@ async def transcribe_file(mp3_path: Path, api_key: str | None, language: str | N
     if language:
         data["language"] = language
 
-    async with httpx.AsyncClient(timeout=300.0) as client:
-        with open(mp3_path, "rb") as f:
-            files = {"file": (mp3_path.name, f, mime)}
-            headers = {"Authorization": f"Bearer {api_key}"}
-            response = await client.post(
-                GROQ_TRANSCRIPTION_URL,
-                data=data,
-                files=files,
-                headers=headers,
-            )
+    with open(mp3_path, "rb") as f:
+        files = {"file": (mp3_path.name, f, mime)}
+        headers = {"Authorization": f"Bearer {api_key}"}
+        response = await post_with_retries(
+            GROQ_TRANSCRIPTION_URL,
+            data=data,
+            files=files,
+            headers=headers,
+            timeout=300.0,
+        )
 
     if response.status_code in (401, 403):
         raise GroqAuthError(f"Groq rejected the API key (HTTP {response.status_code})")
@@ -87,16 +87,33 @@ async def transcribe_chunks(
     language: str | None = None,
     progress_cb=None,
 ) -> dict:
+    results: list[dict | None] = [None] * len(chunk_paths)
+    semaphore = asyncio.Semaphore(max(1, settings.transcription_concurrency))
+    progress_lock = asyncio.Lock()
+    done = 0
+
+    async def worker(index: int, chunk_path: Path) -> None:
+        nonlocal done
+        async with semaphore:
+            results[index] = await transcribe_file(chunk_path, api_key, language=language)
+        if progress_cb:
+            async with progress_lock:
+                done += 1
+                progress_cb(done, len(chunk_paths))
+
+    await asyncio.gather(
+        *(worker(index, path) for index, path in enumerate(chunk_paths))
+    )
+
     all_segments = []
     full_texts = []
     detected_language = None
     duration = 0.0
     offset = 0.0
 
-    for index, chunk_path in enumerate(chunk_paths):
-        result = await transcribe_file(chunk_path, api_key, language=language)
-        if progress_cb:
-            progress_cb(index + 1, len(chunk_paths))
+    for result in results:
+        if result is None:
+            raise ValueError("Transcription chunk returned no result")
         chunk_duration = result.get("duration", 0.0)
         for segment in result.get("segments", []):
             shifted = dict(segment)

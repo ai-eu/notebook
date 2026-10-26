@@ -1,4 +1,5 @@
 import asyncio
+import io
 import logging
 from pathlib import Path
 
@@ -172,6 +173,26 @@ async def send_document(
             "disable_notification": "true",
         }
         result = await _api_call("sendDocument", data=data, files=files)
+    return result if isinstance(result, dict) else {}
+
+
+async def send_document_bytes(
+    filename: str,
+    payload: bytes,
+    *,
+    caption: str,
+    mime_type: str = "application/octet-stream",
+    chat_id: str | None = None,
+) -> dict:
+    """Upload an in-memory artifact, e.g. text stored in SQLite."""
+    target = chat_id or channel_id()
+    files = {"document": (filename, io.BytesIO(payload), mime_type)}
+    data = {
+        "chat_id": target,
+        "caption": caption,
+        "disable_notification": "true",
+    }
+    result = await _api_call("sendDocument", data=data, files=files)
     return result if isinstance(result, dict) else {}
 
 

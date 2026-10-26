@@ -72,22 +72,27 @@ def test_archive_uploads_audio_and_transcript(monkeypatch, tmp_path, bot_api):
     audio_sha = hashlib.sha256((folder / "audio.mp3").read_bytes()).hexdigest()
 
     result = asyncio.run(archive.archive_recording("rec-1"))
-    assert result == {"recording_id": "rec-1", "parts": 1, "uploaded": 2}
-    assert bot_api.calls == ["sendDocument", "sendDocument"]
+    assert result == {"recording_id": "rec-1", "parts": 1, "uploaded": 4}
+    assert bot_api.calls == ["sendDocument", "sendDocument", "sendDocument", "sendDocument"]
 
     files = asyncio.run(load_files("rec-1"))
-    assert [(row.kind, row.idx) for row in files] == [("audio", 0), ("transcript", 0)]
+    assert {(row.kind, row.idx) for row in files} == {
+        ("audio", 0),
+        ("transcript", 0),
+        ("sentences", 0),
+        ("formatted", 0),
+    }
 
-    audio_row = files[0]
+    audio_row = next(row for row in files if row.kind == "audio")
     assert audio_row.sha256 == audio_sha
     assert audio_row.size_bytes == (folder / "audio.mp3").stat().st_size
     assert bot_api.files[audio_row.tg_file_id] == (folder / "audio.mp3").read_bytes()
     caption = bot_api.messages[audio_row.tg_message_id]["caption"]
     assert caption.startswith("🎙 lecture.m4a — audio")
-    assert caption.endswith(
-        archive.build_caption("rec-1", "audio", 0, 1, audio_row.size_bytes, audio_sha)
-    )
-    assert archive.parse_caption(caption)["rid"] == "rec-1"
+    parsed = archive.parse_caption(caption)
+    assert parsed["rid"] == "rec-1"
+    assert parsed["sha"] == audio_sha
+    assert parsed["uid"] == "1"
 
     recording = asyncio.run(load_recording("rec-1"))
     assert recording.storage_state == "tg"
@@ -100,7 +105,7 @@ def test_archive_skips_files_that_are_already_uploaded(monkeypatch, tmp_path, bo
     second = asyncio.run(archive.archive_recording("rec-1"))
 
     assert second["uploaded"] == 0
-    assert bot_api.calls.count("sendDocument") == 2
+    assert bot_api.calls.count("sendDocument") == 4
 
 
 def test_archive_retries_after_a_flood_wait(monkeypatch, tmp_path, bot_api):
@@ -147,7 +152,9 @@ def test_fetch_audio_glues_the_parts_back_together(monkeypatch, tmp_path, bot_ap
 def test_expired_file_id_is_refreshed_from_the_stored_message(monkeypatch, tmp_path, bot_api):
     folder = make_recording(monkeypatch, tmp_path, audio=b"lecture" * 100)
     asyncio.run(archive.archive_recording("rec-1"))
-    row = asyncio.run(load_files("rec-1"))[0]
+    row = next(
+        row for row in asyncio.run(load_files("rec-1")) if row.kind == "audio"
+    )
     bot_api.expire(row.tg_file_id)
 
     restored = tmp_path / "restored.mp3"
@@ -155,7 +162,9 @@ def test_expired_file_id_is_refreshed_from_the_stored_message(monkeypatch, tmp_p
 
     assert "copyMessage" in bot_api.calls
     assert restored.read_bytes() == (folder / "audio.mp3").read_bytes()
-    refreshed = asyncio.run(load_files("rec-1"))[0]
+    refreshed = next(
+        row for row in asyncio.run(load_files("rec-1")) if row.kind == "audio"
+    )
     assert refreshed.tg_file_id != row.tg_file_id
     assert refreshed.tg_file_id in bot_api.files
 
@@ -194,7 +203,7 @@ def test_restore_keeps_an_existing_local_copy(monkeypatch, tmp_path, bot_api):
 
 
 def test_fetch_audio_rejects_a_truncated_download(monkeypatch, tmp_path, bot_api):
-    folder = make_recording(monkeypatch, tmp_path, audio=b"lecture" * 100, with_transcript=False)
+    make_recording(monkeypatch, tmp_path, audio=b"lecture" * 100, with_transcript=False)
     asyncio.run(archive.archive_recording("rec-1"))
     row = asyncio.run(load_files("rec-1"))[0]
     bot_api.files[row.tg_file_id] = bot_api.files[row.tg_file_id][:10]
@@ -216,7 +225,7 @@ def test_pending_recordings_lists_only_unarchived_ones(monkeypatch, tmp_path, bo
     summary = asyncio.run(archive.status_summary())
     assert summary["recordings"] == 2
     assert summary["states"]["tg"] == 1
-    assert summary["files"] == 2
+    assert summary["files"] == 4
 
 
 def test_discover_chats_reads_updates(monkeypatch, bot_api):
