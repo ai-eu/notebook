@@ -3,7 +3,7 @@ from pathlib import Path
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from fastapi.responses import FileResponse, Response
 from pydantic import BaseModel
-from sqlalchemy import select
+from sqlalchemy import func, literal, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from app.database import get_db
 from app.auth import require_user
@@ -92,24 +92,44 @@ async def _get_user_recording(recording_id: str, user: User, db: AsyncSession) -
     return recording
 
 
+def _escape_like(value: str) -> str:
+    return value.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+
+
+_TAG_SPLIT = re.compile(r"\s+")
+
+
 @router.get("/recordings")
 async def list_recordings(
-    limit: int = Query(100, ge=1, le=500),
+    response: Response,
+    limit: int = Query(10, ge=1, le=500),
     offset: int = Query(0, ge=0),
+    tag: str | None = Query(None, max_length=50),
     user: User = Depends(require_user),
     db: AsyncSession = Depends(get_db),
 ):
+    query = select(Recording).where(Recording.user_id == user.id)
+    normalized_tag = (tag or "").strip()
+    if normalized_tag:
+        # Tags are stored space-separated, so match a whole token, not a substring.
+        padded_tags = (
+            literal(" ").concat(func.coalesce(Recording.tags, "")).concat(" ")
+        )
+        query = query.where(
+            padded_tags.like(f"% {_escape_like(normalized_tag)} %", escape="\\")
+        )
     result = await db.execute(
-        select(Recording)
-        .where(Recording.user_id == user.id)
-        .order_by(Recording.created_at.desc())
-        .limit(limit)
+        query.order_by(Recording.created_at.desc())
+        .limit(limit + 1)
         .offset(offset)
     )
-    recordings = result.scalars().all()
+    rows = result.scalars().all()
+    has_more = len(rows) > limit
+    recordings = rows[:limit]
     formatted_ids = await _formatted_recording_ids(
         db, [recording.recording_id for recording in recordings]
     )
+    response.headers["X-Has-More"] = "true" if has_more else "false"
     return [
         _recording_to_dict(
             recording,
@@ -117,6 +137,23 @@ async def list_recordings(
         )
         for recording in recordings
     ]
+
+
+@router.get("/recordings/tags")
+async def list_recording_tags(
+    user: User = Depends(require_user),
+    db: AsyncSession = Depends(get_db),
+):
+    result = await db.execute(
+        select(Recording.tags).where(
+            Recording.user_id == user.id,
+            Recording.tags.isnot(None),
+        )
+    )
+    tags: set[str] = set()
+    for value in result.scalars():
+        tags.update(tag for tag in _TAG_SPLIT.split(value) if tag)
+    return {"tags": sorted(tags, key=str.casefold)}
 
 
 @router.get("/recordings/{recording_id}")

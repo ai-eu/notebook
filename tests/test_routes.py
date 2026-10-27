@@ -142,12 +142,68 @@ def test_recordings_are_paginated():
             await _create_recording(user_id, "rec-2")
             await _create_recording(user_id, "rec-3")
 
-            page = await client.get("/api/recordings?limit=1&offset=1")
+            first = await client.get("/api/recordings?limit=2&offset=0")
+            assert first.status_code == 200
+            assert len(first.json()) == 2
+            assert first.headers["X-Has-More"] == "true"
 
-            assert page.status_code == 200
-            items = page.json()
-            assert len(items) == 1
-            assert items[0]["recording_id"] in {"rec-1", "rec-2", "rec-3"}
+            last = await client.get("/api/recordings?limit=2&offset=2")
+            assert last.status_code == 200
+            assert len(last.json()) == 1
+            assert last.headers["X-Has-More"] == "false"
+
+    asyncio.run(scenario())
+
+
+def test_recordings_are_filtered_by_a_whole_tag():
+    async def scenario():
+        async with _client() as client:
+            await client.post("/api/auth/login", data={"key": KEY})
+            user_id = await _signed_in_user_id()
+            await _create_recording(user_id, "rec-1")
+            await _create_recording(user_id, "rec-2")
+            await _create_recording(user_id, "rec-3")
+            await client.put(
+                "/api/recordings/rec-1/tags", json={"tags": "bom lecture", "comment": ""}
+            )
+            await client.put(
+                "/api/recordings/rec-2/tags", json={"tags": "lecture-notes", "comment": ""}
+            )
+            await client.put(
+                "/api/recordings/rec-3/tags", json={"tags": "lecture", "comment": ""}
+            )
+
+            filtered = await client.get("/api/recordings?tag=lecture")
+            ids = {item["recording_id"] for item in filtered.json()}
+
+            assert ids == {"rec-1", "rec-3"}
+            assert filtered.headers["X-Has-More"] == "false"
+
+            page = await client.get("/api/recordings?tag=lecture&limit=1&offset=0")
+            assert len(page.json()) == 1
+            assert page.headers["X-Has-More"] == "true"
+
+    asyncio.run(scenario())
+
+
+def test_recording_tags_endpoint_lists_every_user_tag():
+    async def scenario():
+        async with _client() as client:
+            await client.post("/api/auth/login", data={"key": KEY})
+            user_id = await _signed_in_user_id()
+            await _create_recording(user_id, "rec-1")
+            await _create_recording(user_id, "rec-2")
+            await client.put(
+                "/api/recordings/rec-1/tags", json={"tags": "bom lecture", "comment": ""}
+            )
+            await client.put(
+                "/api/recordings/rec-2/tags", json={"tags": "work bom", "comment": ""}
+            )
+
+            response = await client.get("/api/recordings/tags")
+
+            assert response.status_code == 200
+            assert response.json() == {"tags": ["bom", "lecture", "work"]}
 
     asyncio.run(scenario())
 

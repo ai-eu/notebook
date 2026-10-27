@@ -13,9 +13,12 @@ const voiceHint = document.getElementById('voice-hint');
 const ACTIVE_TAG_KEY = 'activeTag';
 let activeTag = localStorage.getItem(ACTIVE_TAG_KEY) || '';
 let currentRecordings = [];
-const PAGE_SIZE = 100;
+const PAGE_SIZE = 10;
 let recordingsOffset = 0;
 let hasMoreRecordings = false;
+let knownTags = [];
+let isLoadingRecordings = false;
+let recordingsRequest = 0;
 // A text file waiting for the user to pick a voice before it is uploaded.
 let pendingTtsFile = null;
 
@@ -253,14 +256,15 @@ function renderTags(tags) {
     return `<div class="recording-tags">${chips}</div>`;
 }
 
-function uniqueTags(recordings) {
-    const tags = new Set();
-    for (const r of recordings) {
-        for (const tag of (r.tags || '').split(/\s+/)) {
-            if (tag) tags.add(tag);
-        }
+async function loadTags() {
+    try {
+        const res = await fetch('/api/recordings/tags');
+        if (!res.ok) return null;
+        const data = await res.json();
+        return data.tags || [];
+    } catch {
+        return null;
     }
-    return [...tags].sort((a, b) => a.localeCompare(b, undefined, { sensitivity: 'base' }));
 }
 
 function setActiveTag(tag) {
@@ -269,9 +273,8 @@ function setActiveTag(tag) {
     else localStorage.removeItem(ACTIVE_TAG_KEY);
 }
 
-function renderTagFilter(recordings) {
+function renderTagFilter(tags) {
     if (!tagsFilterContainer) return;
-    const tags = uniqueTags(recordings);
     // The saved filter is stale when its tag is gone from every recording
     if (activeTag && !tags.includes(activeTag)) setActiveTag('');
     if (!tags.length) {
@@ -591,52 +594,78 @@ function renderCards(recordings) {
 
 function updateLoadMore() {
     if (!loadMoreButton) return;
-    loadMoreButton.classList.toggle('hidden', !hasMoreRecordings || Boolean(activeTag));
+    loadMoreButton.classList.toggle('hidden', !hasMoreRecordings);
 }
 
 function renderRecordings(recordings) {
     if (!recordingsContainer) return;
     currentRecordings = recordings;
-    renderTagFilter(recordings);
+    renderTagFilter(knownTags);
     updateLoadMore();
-    const visible = activeTag
-        ? recordings.filter(r => (r.tags || '').split(/\s+/).includes(activeTag))
-        : recordings;
-    if (!visible.length) {
+    if (!recordings.length) {
         recordingsContainer.innerHTML = activeTag
             ? '<p>No recordings with this tag.</p>'
             : '<p>No recordings yet.</p>';
         return;
     }
-    renderCards(visible);
+    renderCards(recordings);
 }
 
 async function loadRecordings({ reset = true } = {}) {
+    if (isLoadingRecordings && !reset) return;
+    const requestId = ++recordingsRequest;
+    isLoadingRecordings = true;
     try {
         if (reset) {
             recordingsOffset = 0;
             currentRecordings = [];
+            const tags = await loadTags();
+            if (requestId !== recordingsRequest) return;
+            if (tags) {
+                knownTags = tags;
+                if (activeTag && !knownTags.includes(activeTag)) setActiveTag('');
+            }
         }
-        const res = await fetch(`/api/recordings?limit=${PAGE_SIZE}&offset=${recordingsOffset}`);
+        const params = new URLSearchParams({
+            limit: PAGE_SIZE,
+            offset: recordingsOffset,
+        });
+        if (activeTag) params.set('tag', activeTag);
+        const res = await fetch(`/api/recordings?${params}`);
+        if (requestId !== recordingsRequest) return;
         if (res.status === 401) {
             window.location.href = '/api/auth/login';
             return;
         }
         if (!res.ok) throw new Error('failed');
         const data = await res.json();
+        const hasMoreHeader = res.headers.get('X-Has-More');
         currentRecordings = currentRecordings.concat(data);
         recordingsOffset += data.length;
-        hasMoreRecordings = data.length === PAGE_SIZE;
+        hasMoreRecordings = hasMoreHeader === null
+            ? data.length === PAGE_SIZE
+            : hasMoreHeader === 'true';
         renderRecordings(currentRecordings);
     } catch (e) {
+        if (requestId !== recordingsRequest) return;
         if (recordingsContainer) recordingsContainer.innerHTML = '<p class="error">Could not load the list.</p>';
         hasMoreRecordings = false;
         updateLoadMore();
+    } finally {
+        if (requestId === recordingsRequest) isLoadingRecordings = false;
     }
 }
 
 if (loadMoreButton) {
     loadMoreButton.addEventListener('click', () => loadRecordings({ reset: false }));
+    if ('IntersectionObserver' in window) {
+        const observer = new IntersectionObserver((entries) => {
+            if (entries.some(entry => entry.isIntersecting) && hasMoreRecordings) {
+                loadRecordings({ reset: false });
+            }
+        }, { rootMargin: '300px 0px' });
+        observer.observe(loadMoreButton);
+    }
 }
 
 function closeTagsPopups() {
@@ -702,7 +731,7 @@ if (tagsFilterContainer) {
         const chip = e.target.closest('.tag-chip');
         if (!chip) return;
         setActiveTag(chip.dataset.tag === activeTag ? '' : chip.dataset.tag);
-        renderRecordings(currentRecordings);
+        loadRecordings();
     });
 }
 
