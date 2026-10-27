@@ -388,15 +388,22 @@ function uploadTtsFile(file) {
     xhr.send(formData);
 }
 
-// --- Clipboard text: Ctrl/Cmd+V on desktop, long-press the dropzone on touch devices ---
-// Read from the paste event itself, so no clipboard permission or secure origin is needed.
+// --- Clipboard text: a small header button opens a real textarea outside the dropzone ---
 
-const pasteCapture = document.getElementById('paste-capture');
+const pasteBtn = document.getElementById('paste-btn');
+const pastePanel = document.getElementById('paste-panel');
+const pasteInput = document.getElementById('paste-input');
+const pasteCancel = document.getElementById('paste-cancel');
+const pasteSubmit = document.getElementById('paste-submit');
 
 function clipboardFilename() {
     const now = new Date();
     const pad = (value) => String(value).padStart(2, '0');
     return `Clipboard ${pad(now.getDate())}.${pad(now.getMonth() + 1)} ${pad(now.getHours())}-${pad(now.getMinutes())}.txt`;
+}
+
+function closePastePanel() {
+    pastePanel?.classList.add('hidden');
 }
 
 function submitClipboardText(raw) {
@@ -409,41 +416,49 @@ function submitClipboardText(raw) {
         showToast(`Text too long: ${text.length} characters, limit is ${ttsMaxChars}.`, true);
         return;
     }
+    closePastePanel();
     uploadTtsFile(new File([text], clipboardFilename(), { type: 'text/plain' }));
 }
 
-document.addEventListener('paste', (event) => {
-    const target = event.target;
-    const isCapture = target === pasteCapture;
-    const isOtherField = target instanceof Element
-        && !isCapture
-        && target.closest('input, textarea, [contenteditable]');
-    if (isOtherField) return;
+if (pasteBtn && pastePanel) {
+    pasteBtn.addEventListener('click', (event) => {
+        event.stopPropagation();
+        const opening = pastePanel.classList.contains('hidden');
+        pastePanel.classList.toggle('hidden');
+        if (!opening) return;
+        if (!voicesLoaded) loadVoices();
+        pasteInput.value = '';
+        pasteInput.focus();
+    });
 
-    const text = event.clipboardData?.getData('text');
-    if (!text) return;
-    event.preventDefault();
-    if (pasteCapture) {
-        pasteCapture.value = '';
-        pasteCapture.blur();
-    }
-    submitClipboardText(text);
-});
+    pastePanel.addEventListener('click', (event) => event.stopPropagation());
+    pasteCancel.addEventListener('click', closePastePanel);
+    pasteSubmit.addEventListener('click', () => submitClipboardText(pasteInput.value));
 
-document.addEventListener('keydown', (event) => {
-    if (!(event.ctrlKey || event.metaKey) || event.altKey) return;
-    if (event.key.toLowerCase() !== 'v') return;
-    const target = event.target;
-    if (target instanceof Element && target.closest('input, textarea, [contenteditable]')) return;
-    if (!pasteCapture) return;
-    if (!voicesLoaded) loadVoices();
-    // Focus an editable field so the browser routes the paste through the page.
-    pasteCapture.focus();
-});
+    // A pasted clipboard goes straight to the server once it passes validation.
+    pasteInput.addEventListener('paste', (event) => {
+        const text = event.clipboardData?.getData('text');
+        if (!text) return;
+        event.preventDefault();
+        submitClipboardText(text);
+    });
 
-if (pasteCapture) {
-    // Tapping the invisible layer should open the file picker, not the keyboard.
-    pasteCapture.addEventListener('click', () => pasteCapture.blur());
+    pasteInput.addEventListener('keydown', (event) => {
+        if (event.key === 'Enter' && (event.ctrlKey || event.metaKey)) {
+            event.preventDefault();
+            submitClipboardText(pasteInput.value);
+        }
+    });
+
+    document.addEventListener('click', (event) => {
+        if (!event.target.closest('#paste-panel') && !event.target.closest('#paste-btn')) {
+            closePastePanel();
+        }
+    });
+
+    document.addEventListener('keydown', (event) => {
+        if (event.key === 'Escape') closePastePanel();
+    });
 }
 
 const STAGE_LABELS = {

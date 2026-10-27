@@ -113,6 +113,7 @@ header a:hover {
 }
 
 .header-actions {
+    position: relative;
     display: flex;
     align-items: center;
     gap: 0.75rem;
@@ -280,39 +281,32 @@ button:hover {
     font-size: 0.85rem;
 }
 
-/* Clipboard paste: an off-screen editable field that Ctrl/Cmd+V can target on desktop.
-   On touch devices it stretches over the dropzone, so a long-press opens the native
-   "Paste" menu and the resulting paste event sends the text. */
-.paste-capture {
-    position: fixed;
-    top: 0;
-    left: 0;
-    width: 1px;
-    height: 1px;
-    padding: 0;
-    border: 0;
-    opacity: 0;
-    resize: none;
-    pointer-events: none;
+/* Paste panel: opened from the header, away from the dropzone's file picker */
+.paste-panel {
+    position: absolute;
+    top: calc(100% + 0.5rem);
+    right: 0;
+    z-index: 101;
+    display: flex;
+    flex-direction: column;
+    gap: 0.5rem;
+    width: min(24rem, calc(100vw - 3.5rem));
+    padding: 0.75rem;
+    background: var(--surface);
+    border: 1px solid var(--border-strong);
+    border-radius: 8px;
+    box-shadow: 0 4px 16px var(--shadow);
 }
 
-@media (pointer: coarse) {
-    .paste-capture {
-        position: absolute;
-        inset: 0;
-        width: 100%;
-        height: 100%;
-        opacity: 1;
-        border: 0;
-        background: transparent;
-        color: transparent;
-        -webkit-text-fill-color: transparent;
-        caret-color: transparent;
-        font-size: 16px;
-        resize: none;
-        outline: none;
-        pointer-events: auto;
-    }
+.paste-panel-actions {
+    display: flex;
+    justify-content: flex-end;
+    gap: 0.5rem;
+}
+
+.paste-panel-actions button {
+    padding: 0.4rem 0.9rem;
+    font-size: 0.9rem;
 }
 
 #uploads {
@@ -593,7 +587,8 @@ h2 {
 }
 
 .tags-popup input,
-.tags-popup textarea {
+.tags-popup textarea,
+.paste-panel textarea {
     width: 100%;
     padding: 0.5rem;
     border: 1px solid var(--border-strong);
