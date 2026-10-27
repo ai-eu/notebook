@@ -34,15 +34,15 @@ cd notebook
 cp .env.example .env
 # edit .env
 
-python -m venv venv
-venv\Scripts\activate  # Windows
-# source venv/bin/activate  # Linux/Mac
+python -m venv .venv
+.venv\Scripts\activate  # Windows
+# source .venv/bin/activate  # Linux/Mac
 
 pip install -r requirements.txt
 
 # Run (no reload, so background tasks are not killed)
-venv\Scripts\uvicorn app.main:app --host 0.0.0.0 --port 8000
-# Linux: venv/bin/uvicorn app.main:app --host 0.0.0.0 --port 8000
+.venv\Scripts\uvicorn app.main:app --host 0.0.0.0 --port 8000
+# Linux: .venv/bin/uvicorn app.main:app --host 0.0.0.0 --port 8000
 ```
 
 Open http://localhost:8000 and sign in with a Groq API key (https://console.groq.com/keys).
@@ -52,7 +52,7 @@ Open http://localhost:8000 and sign in with a Groq API key (https://console.groq
 For local UI testing without a real key:
 
 ```bash
-MOCK_TRANSCRIPTION=true venv/bin/uvicorn app.main:app --host 0.0.0.0 --port 8000
+MOCK_TRANSCRIPTION=true .venv/bin/uvicorn app.main:app --host 0.0.0.0 --port 8000
 ```
 
 ## Tests
@@ -64,14 +64,17 @@ pytest
 
 ## User management (CLI)
 
+The commands below use the project venv explicitly, so they work without activating it.
+On Windows use `.venv\Scripts\python` instead of `.venv/bin/python`.
+
 ```bash
 # Register a user in advance (required when ALLOW_SELF_REGISTRATION=false)
-python -m app.cli add-user "User name" --key gsk_...
-python -m app.cli list-users
+.venv/bin/python -m app.cli add-user "User name" --key gsk_...
+.venv/bin/python -m app.cli list-users
 # Replace a user's key, keeping their recordings (e.g. after rotating it at Groq)
-python -m app.cli rebind-key <user_id> gsk_...
-python -m app.cli verify-key <user_id>
-python -m app.cli delete-user <user_id> [--purge-files]
+.venv/bin/python -m app.cli rebind-key <user_id> gsk_...
+.venv/bin/python -m app.cli verify-key <user_id>
+.venv/bin/python -m app.cli delete-user <user_id> [--purge-files]
 ```
 
 ## Telegram archive (optional)
@@ -88,7 +91,7 @@ Setup:
 3. Post anything in the channel, then read the channel id from the bot updates:
 
 ```bash
-python -m app.cli tg-discover
+.venv/bin/python -m app.cli tg-discover
 ```
 
 4. Put the values into `.env`:
@@ -102,15 +105,15 @@ TELEGRAM_CHAT_ID=-1001234567890
 Commands:
 
 ```bash
-python -m app.cli storage-status                 # configuration, counters, retention
-python -m app.cli storage-backfill --dry-run     # what would be imported/uploaded/evicted
-python -m app.cli storage-backfill               # backfill + verify + evict local files
-python -m app.cli storage-backfill --limit 5
-python -m app.cli storage-backfill --no-evict    # upload but keep local copies
-python -m app.cli storage-verify                 # check archive, refresh expired file ids
-python -m app.cli storage-restore <recording_id> # download audio back to the server
-python -m app.cli storage-orphans                # messages Telegram refused to delete
-python -m app.cli storage-orphans --retry
+.venv/bin/python -m app.cli storage-status                 # configuration, counters, retention
+.venv/bin/python -m app.cli storage-backfill --dry-run     # what would be imported/uploaded/evicted
+.venv/bin/python -m app.cli storage-backfill               # backfill + verify + evict local files
+.venv/bin/python -m app.cli storage-backfill --limit 5
+.venv/bin/python -m app.cli storage-backfill --no-evict    # upload but keep local copies
+.venv/bin/python -m app.cli storage-verify                 # check archive, refresh expired file ids
+.venv/bin/python -m app.cli storage-restore <recording_id> # download audio back to the server
+.venv/bin/python -m app.cli storage-orphans                # messages Telegram refused to delete
+.venv/bin/python -m app.cli storage-orphans --retry
 ```
 
 The old `tg-*` commands are still available as aliases.
@@ -184,11 +187,15 @@ the folder is removed; the recording, page and translations continue to work fro
 
 ## Deployment on Debian VPS
 
+The service runs as the unprivileged `deployer` user from `/opt/apps/notebook`, with the
+venv at `/opt/apps/notebook/.venv`. `uvicorn` listens on `127.0.0.1:5003` behind nginx at
+`notebook.apps.yaremenko.eu`. Run steps 2-4 as `deployer`.
+
 1. Prepare the server:
 
 ```bash
 sudo apt update
-sudo apt install -y python3.11 python3.11-venv ffmpeg nginx certbot python3-certbot-nginx
+sudo apt install -y python3 python3-venv ffmpeg nginx certbot python3-certbot-nginx
 ```
 
 2. Copy the project:
@@ -196,19 +203,19 @@ sudo apt install -y python3.11 python3.11-venv ffmpeg nginx certbot python3-cert
 ```bash
 sudo mkdir -p /opt/apps/notebook
 sudo cp -r . /opt/apps/notebook
-sudo chown -R www-data:www-data /opt/apps/notebook
+sudo chown -R deployer:deployer /opt/apps/notebook
 ```
 
-3. Configure the environment:
+3. Configure the environment (as `deployer`):
 
 ```bash
 cd /opt/apps/notebook
-sudo -u www-data cp .env.example .env
+cp .env.example .env
 # edit .env: SESSION_COOKIE_SECURE=true, TRUST_PROXY_HEADERS=true (behind nginx),
 # LOCAL_RETENTION_DAYS=7, TELEGRAM_ENABLED=true
 
-sudo -u www-data python3.11 -m venv venv
-sudo -u www-data venv/bin/pip install -r requirements.txt
+python3 -m venv .venv
+.venv/bin/pip install -r requirements.txt
 ```
 
 4. Systemd:
@@ -228,30 +235,34 @@ sudo rm /etc/nginx/sites-enabled/default
 sudo nginx -t
 sudo systemctl restart nginx
 
-# Replace example.com with your domain
-sudo certbot --nginx -d example.com
+sudo certbot --nginx -d notebook.apps.yaremenko.eu
 ```
+
+`deploy/nginx.conf` is a template for a fresh install; Certbot adds the TLS server block.
+On an existing server do not overwrite the Certbot-managed config — sync only
+`server_name`, `proxy_pass`, `client_max_body_size` and the timeouts.
 
 ## Updating production
 
-The app runs from `/opt/apps/notebook` as the `notebook` systemd service (user `www-data`),
-behind nginx. An update is: get the new code onto the server, refresh dependencies if
-`requirements.txt` changed, restart the service.
+The app runs from `/opt/apps/notebook` as the `notebook` systemd service (user `deployer`,
+venv `/opt/apps/notebook/.venv`), listening on `127.0.0.1:5003` behind nginx at
+`notebook.apps.yaremenko.eu`. An update is: get the new code onto the server, refresh
+dependencies if `requirements.txt` changed, restart the service.
 
 1. Push the release locally, then pull it on the server:
 
 ```bash
 git push origin main          # or whichever branch prod tracks
 
-ssh user@server
+ssh deployer@217.154.102.146
 cd /opt/apps/notebook
-sudo -u www-data git pull
+git pull
 ```
 
 2. If `requirements.txt` changed, update the venv:
 
 ```bash
-sudo -u www-data venv/bin/pip install -r requirements.txt
+.venv/bin/pip install -r requirements.txt
 ```
 
 3. Restart and verify:
@@ -269,20 +280,22 @@ are critical — they protect the server's `.env`, database, recordings and venv
 
 ```bash
 rsync -avz --delete \
-  --exclude .git/ --exclude .env --exclude venv/ \
+  --exclude .git/ --exclude .env --exclude .venv/ --exclude venv/ \
   --exclude 'app.db*' --exclude data/ --exclude cookies.txt \
   --exclude __pycache__/ --exclude '*.pyc' --exclude .pytest_cache/ --exclude '*.log' \
-  ./ user@server:/tmp/notebook/
+  ./ deployer@217.154.102.146:/tmp/notebook/
 
-ssh user@server
+ssh deployer@217.154.102.146
 sudo rsync -a --delete /tmp/notebook/ /opt/apps/notebook/
-sudo chown -R www-data:www-data /opt/apps/notebook
-sudo -u www-data venv/bin/pip install -r requirements.txt   # if deps changed
+sudo chown -R deployer:deployer /opt/apps/notebook
+.venv/bin/pip install -r requirements.txt   # if deps changed
 sudo systemctl restart notebook
 ```
 
 Notes:
 
+- The only production environment is `/opt/apps/notebook/.venv`. Never create or update a
+  second `venv/` next to it: the systemd unit runs `.venv`, so the other copy is ignored.
 - Never overwrite `/opt/apps/notebook/.env`, `app.db` or `data/` — they live only on the
   server and are gitignored. `data/` holds every recording and transcript.
 - After changing `deploy/notebook.service`: `sudo systemctl daemon-reload` then restart.

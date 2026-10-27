@@ -1,15 +1,16 @@
 [Unit]
-Description=Notebook Transcriber
+Description=Notebook Dictaphone Transcriber
 After=network.target
 
 [Service]
-User=www-data
-Group=www-data
+Type=simple
+User=deployer
+Group=deployer
 WorkingDirectory=/opt/apps/notebook
 EnvironmentFile=/opt/apps/notebook/.env
-ExecStart=/opt/apps/notebook/venv/bin/uvicorn app.main:app --host 127.0.0.1 --port 8000
-Restart=always
-RestartSec=3
+ExecStart=/opt/apps/notebook/.venv/bin/uvicorn app.main:app --host 127.0.0.1 --port 5003
+Restart=on-failure
+RestartSec=5
 
 [Install]
 WantedBy=multi-user.target

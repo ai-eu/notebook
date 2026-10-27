@@ -54,56 +54,61 @@ README.md
 
 ```bash
 cp .env.example .env   # отредактировать .env
-python -m venv venv
+python -m venv .venv
 # Windows:
-venv\Scripts\activate
+.venv\Scripts\activate
 # Linux/Mac:
-# source venv/bin/activate
+# source .venv/bin/activate
 pip install -r requirements.txt
 
 # Без перезагрузки (фоновые задачи не убиваются):
-venv\Scripts\uvicorn app.main:app --host 0.0.0.0 --port 8000
+.venv\Scripts\uvicorn app.main:app --host 0.0.0.0 --port 8000
 ```
 
 Открыть http://localhost:8000, войти с Groq API-ключом.
 
 Тестовый режим без Groq:
 ```bash
-MOCK_TRANSCRIPTION=true uvicorn app.main:app --host 0.0.0.0 --port 8000
+MOCK_TRANSCRIPTION=true .venv/bin/uvicorn app.main:app --host 0.0.0.0 --port 8000
 ```
 
 ## Тесты
 
 ```bash
-pip install -r requirements-dev.txt
-pytest
+.venv/bin/pip install -r requirements-dev.txt
+.venv/bin/pytest
 ```
 
 ## CLI
 
+На Windows вместо `.venv/bin/python` — `.venv\Scripts\python`.
+
 ```bash
-python -m app.cli add-user "Имя" --key gsk_...
-python -m app.cli list-users
-python -m app.cli rebind-key <user_id> gsk_...
-python -m app.cli verify-key <user_id>
-python -m app.cli delete-user <user_id> [--purge-files]
-python -m app.cli tg-discover
-python -m app.cli storage-status
-python -m app.cli storage-backfill [--limit N] [--dry-run] [--no-evict]
-python -m app.cli storage-verify [recording_id] [--no-repair]
-python -m app.cli storage-restore <recording_id> [--force]
-python -m app.cli storage-orphans [--retry]
-python -m app.cli tg-status          # aliases
-python -m app.cli tg-backfill [--limit N]
-python -m app.cli tg-verify [recording_id] [--no-repair]
-python -m app.cli tg-restore <recording_id> [--force]
-python -m app.cli tg-cleanup [--dry-run]
+.venv/bin/python -m app.cli add-user "Имя" --key gsk_...
+.venv/bin/python -m app.cli list-users
+.venv/bin/python -m app.cli rebind-key <user_id> gsk_...
+.venv/bin/python -m app.cli verify-key <user_id>
+.venv/bin/python -m app.cli delete-user <user_id> [--purge-files]
+.venv/bin/python -m app.cli tg-discover
+.venv/bin/python -m app.cli storage-status
+.venv/bin/python -m app.cli storage-backfill [--limit N] [--dry-run] [--no-evict]
+.venv/bin/python -m app.cli storage-verify [recording_id] [--no-repair]
+.venv/bin/python -m app.cli storage-restore <recording_id> [--force]
+.venv/bin/python -m app.cli storage-orphans [--retry]
+.venv/bin/python -m app.cli tg-status          # aliases
+.venv/bin/python -m app.cli tg-backfill [--limit N]
+.venv/bin/python -m app.cli tg-verify [recording_id] [--no-repair]
+.venv/bin/python -m app.cli tg-restore <recording_id> [--force]
+.venv/bin/python -m app.cli tg-cleanup [--dry-run]
 ```
 
 ## Важные замечания
 
 - Groq API-ключи хранятся в БД в открытом тексте. `app.db` и `data/` приватные.
 - Требуется `ffmpeg` + `ffprobe` в системе.
+- Production: сервис `notebook` работает от пользователя `deployer` из
+  `/opt/apps/notebook/.venv`, `uvicorn` слушает `127.0.0.1:5003`, nginx проксирует
+  `notebook.apps.yaremenko.eu`. Второй `venv/` рядом не создавать — юнит запускает `.venv`.
 - В production за nginx с HTTPS, `SESSION_COOKIE_SECURE=true`, `TRUST_PROXY_HEADERS=true`.
 - Пути в БД relative к `data/`; `BASE_DIR` привязан к корню проекта, запуск из другого cwd
   больше не меняет расположение БД/данных/шаблонов.

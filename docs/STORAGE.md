@@ -74,8 +74,8 @@ Bot API documents that messages can only be deleted while they are fresh (48 hou
 older refused messages are marked `manual` and listed by:
 
 ```bash
-python -m app.cli storage-orphans
-python -m app.cli storage-orphans --retry
+.venv/bin/python -m app.cli storage-orphans
+.venv/bin/python -m app.cli storage-orphans --retry
 ```
 
 Manual deletion must be done by an administrator in Telegram. This is a Bot API
@@ -84,10 +84,10 @@ limitation, not an application bug.
 ## Backfill and recovery
 
 ```bash
-python -m app.cli storage-backfill --dry-run
-python -m app.cli storage-backfill --no-evict
-python -m app.cli storage-backfill
-python -m app.cli storage-verify
+.venv/bin/python -m app.cli storage-backfill --dry-run
+.venv/bin/python -m app.cli storage-backfill --no-evict
+.venv/bin/python -m app.cli storage-backfill
+.venv/bin/python -m app.cli storage-verify
 ```
 
 Backfill imports legacy text files into SQLite, builds `sentences` (using the old
