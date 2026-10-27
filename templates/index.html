@@ -29,28 +29,13 @@
         </div>
     </div>
     <div id="dropzone" class="dropzone">
-        {% if tts_enabled %}
-        <button id="paste-text-btn" class="paste-text-btn" type="button" title="Paste text from the clipboard" aria-label="Paste text from the clipboard">
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M16 4h2a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h2"/><rect x="8" y="2" width="8" height="4" rx="1"/></svg>
-            Paste text
-        </button>
-        {% endif %}
         <p>Drag and drop audio/video{% if tts_enabled %} or a text (.txt / .md) file{% endif %} here or click to select</p>
+        {% if tts_enabled %}<p class="dropzone-hint">Or paste text: Ctrl/Cmd+V, or long-press here on a phone.</p>{% endif %}
         <input type="file" id="fileinput" accept="audio/*,video/*{% if tts_enabled %},.txt,.md,text/plain,text/markdown{% endif %}" style="display:none">
+        {% if tts_enabled %}
+        <textarea id="paste-capture" class="paste-capture" aria-label="Paste text from the clipboard" tabindex="-1"></textarea>
+        {% endif %}
     </div>
-    {% if tts_enabled %}
-    <div id="paste-modal" class="sessions-modal hidden" role="dialog" aria-modal="true" aria-labelledby="paste-modal-title">
-        <div class="sessions-modal-box paste-modal-box">
-            <h2 id="paste-modal-title">Paste text</h2>
-            <p class="paste-hint">The browser did not give this page access to the clipboard. Paste the text below with Ctrl/Cmd+V — it will be sent automatically.</p>
-            <textarea id="paste-textarea" rows="8" placeholder="Paste text here (Ctrl/Cmd+V)"></textarea>
-            <div class="paste-modal-actions">
-                <button id="paste-cancel" class="tags-cancel" type="button">Cancel</button>
-                <button id="paste-submit" type="button">Use text</button>
-            </div>
-        </div>
-    </div>
-    {% endif %}
     {% if tts_enabled %}
     <div id="voice-row" class="voice-row hidden">
         <label for="voice-select" class="voice-label">Voice:</label>
