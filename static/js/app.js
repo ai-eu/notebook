@@ -142,6 +142,7 @@ if (sessionsBtn && sessionsModal) {
 // --- TTS mode: detected from the uploaded file's format (.txt / .md) ---
 
 let voicesLoaded = false;
+let ttsMaxChars = null;
 
 function isTextFile(file) {
     const textTypes = ['text/plain', 'text/markdown'];
@@ -184,6 +185,7 @@ async function loadVoices() {
         const res = await fetch('/api/tts/voices');
         if (!res.ok) return;
         const data = await res.json();
+        ttsMaxChars = Number(data.max_chars) || null;
         const groups = {};
         for (const voice of data.voices) {
             (groups[voice.lang] = groups[voice.lang] || []).push(voice);
@@ -384,6 +386,93 @@ function uploadTtsFile(file) {
     });
 
     xhr.send(formData);
+}
+
+// --- Clipboard text: pasted text goes through the same TTS upload as a .txt file ---
+
+const pasteTextBtn = document.getElementById('paste-text-btn');
+const pasteModal = document.getElementById('paste-modal');
+const pasteTextarea = document.getElementById('paste-textarea');
+const pasteCancel = document.getElementById('paste-cancel');
+const pasteSubmit = document.getElementById('paste-submit');
+
+function clipboardFilename() {
+    const now = new Date();
+    const pad = (value) => String(value).padStart(2, '0');
+    return `Clipboard ${pad(now.getDate())}.${pad(now.getMonth() + 1)} ${pad(now.getHours())}-${pad(now.getMinutes())}.txt`;
+}
+
+function openPasteModal() {
+    if (!pasteModal) return;
+    if (!voicesLoaded) loadVoices();
+    pasteTextarea.value = '';
+    pasteModal.classList.remove('hidden');
+    pasteTextarea.focus();
+}
+
+function closePasteModal() {
+    pasteModal?.classList.add('hidden');
+}
+
+function submitClipboardText(raw) {
+    const text = String(raw ?? '');
+    if (!text.trim()) {
+        showToast('The clipboard is empty or contains no text.', true);
+        return;
+    }
+    if (ttsMaxChars && text.length > ttsMaxChars) {
+        showToast(`Text too long: ${text.length} characters, limit is ${ttsMaxChars}.`, true);
+        return;
+    }
+    closePasteModal();
+    uploadTtsFile(new File([text], clipboardFilename(), { type: 'text/plain' }));
+}
+
+async function pasteFromClipboard() {
+    if (!voicesLoaded) loadVoices();
+    try {
+        if (!navigator.clipboard || !navigator.clipboard.readText) throw new Error('unsupported');
+        const text = await navigator.clipboard.readText();
+        if (!text.trim()) {
+            openPasteModal();
+            return;
+        }
+        submitClipboardText(text);
+    } catch (e) {
+        // Browsers may deny clipboard reads (iOS, Firefox, non-secure origins).
+        openPasteModal();
+    }
+}
+
+if (pasteTextBtn) {
+    pasteTextBtn.addEventListener('click', (event) => {
+        event.preventDefault();
+        event.stopPropagation();
+        pasteFromClipboard();
+    });
+}
+
+if (pasteModal) {
+    pasteModal.addEventListener('click', (event) => {
+        if (event.target === pasteModal) closePasteModal();
+    });
+    pasteCancel?.addEventListener('click', closePasteModal);
+    pasteSubmit?.addEventListener('click', () => submitClipboardText(pasteTextarea.value));
+    pasteTextarea?.addEventListener('paste', (event) => {
+        const text = event.clipboardData?.getData('text');
+        if (!text) return;
+        event.preventDefault();
+        submitClipboardText(text);
+    });
+    pasteTextarea?.addEventListener('keydown', (event) => {
+        if (event.key === 'Enter' && (event.ctrlKey || event.metaKey)) {
+            event.preventDefault();
+            submitClipboardText(pasteTextarea.value);
+        }
+    });
+    document.addEventListener('keydown', (event) => {
+        if (event.key === 'Escape') closePasteModal();
+    });
 }
 
 const STAGE_LABELS = {

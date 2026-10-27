@@ -210,6 +210,8 @@ def test_index_shows_tts_ui_when_enabled():
             assert 'id="voice-hint"' in page.text
             # one unified dropzone whose accept includes text formats
             assert ".txt,.md" in page.text
+            assert 'id="paste-text-btn"' in page.text
+            assert 'id="paste-modal"' in page.text
 
     asyncio.run(scenario())
 
@@ -224,6 +226,8 @@ def test_index_hides_tts_ui_when_disabled(monkeypatch):
             assert 'id="voice-row"' not in page.text
             assert 'id="voice-select"' not in page.text
             assert ".txt,.md" not in page.text
+            assert 'id="paste-text-btn"' not in page.text
+            assert 'id="paste-modal"' not in page.text
 
     asyncio.run(scenario())
 
