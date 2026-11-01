@@ -27,6 +27,10 @@
     --highlight-bg: #fff3cd;
     --highlight-text: #000000;
 
+    --playing-bg: #d6e7ff;
+    --playing-text: #0a2a5e;
+    --playing-accent: #0d6efd;
+
     --shadow: rgba(0, 0, 0, 0.08);
     --shadow-up: rgba(0, 0, 0, 0.05);
     --spinner-track: rgba(255, 255, 255, 0.35);
@@ -61,6 +65,10 @@
 
     --highlight-bg: #3d3417;
     --highlight-text: #ffd76a;
+
+    --playing-bg: #1d3a63;
+    --playing-text: #eaf2ff;
+    --playing-accent: #5aa2ff;
 
     --shadow: rgba(0, 0, 0, 0.55);
     --shadow-up: rgba(0, 0, 0, 0.5);
@@ -789,11 +797,6 @@ h2 {
     background: var(--surface-hover);
 }
 
-.sentence-line.active {
-    background: var(--highlight-bg);
-    color: var(--highlight-text);
-}
-
 .status-text {
     color: var(--muted);
     font-style: italic;
@@ -930,11 +933,22 @@ h2 {
     margin: 0.1rem 0;
     border-radius: 4px;
     transition: background 0.15s;
+    cursor: pointer;
 }
 
 .sentence.highlighted {
     background: var(--highlight-bg);
     color: var(--highlight-text);
+}
+
+/* The sentence being played keeps its own colour, even under the pointer: a
+   click leaves the mouse over the line, and the hover pairing must not repaint
+   it. Three classes outrank `.sentence.highlighted`. */
+.transcript-container .sentence-line.active,
+.transcript-container .sentence.active {
+    background: var(--playing-bg);
+    color: var(--playing-text);
+    box-shadow: inset 3px 0 0 var(--playing-accent);
 }
 
 .load-more {

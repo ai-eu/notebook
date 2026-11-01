@@ -10,6 +10,13 @@ const audioHint = document.getElementById('audio-hint');
 let sentences = [];
 let activeSentenceIndex = -1;
 
+// A sentence picked by a click (in either column) or by the phrase buttons plays
+// on its own: playback stops at its end and never rolls into the next sentence.
+// Only the native player controls start the whole track.
+let oneShot = null;
+let oneShotFrame = null;
+const ONE_SHOT_TOLERANCE = 0.25;
+
 // Audio that lives in the archive is downloaded on the first listen, which takes a
 // moment: say so instead of leaving a silent player on screen.
 const ARCHIVE_HINT_DELAY_MS = 800;
@@ -124,7 +131,6 @@ function renderTranscript(transcript) {
             p.dataset.start = start.toFixed(3);
             p.dataset.end = end.toFixed(3);
             p.textContent = sent;
-            p.addEventListener('click', () => playPhrase(idx));
             currentParagraph.appendChild(p);
 
             cumLen += len;
@@ -167,13 +173,70 @@ function scrollToSentence(idx) {
     el.scrollIntoView({ behavior: 'smooth', block: 'center' });
 }
 
-function playPhrase(idx) {
-    if (idx < 0 || idx >= sentences.length) return;
-    player.currentTime = sentences[idx].start;
-    if (player.paused) {
-        player.play().catch(() => {});
+function stopOneShot() {
+    oneShot = null;
+    if (oneShotFrame) {
+        cancelAnimationFrame(oneShotFrame);
+        oneShotFrame = null;
     }
 }
+
+function finishOneShot() {
+    const finished = oneShot ? oneShot.index : -1;
+    stopOneShot();
+    player.pause();
+    if (finished >= 0) highlightSentence(finished);
+}
+
+// requestAnimationFrame rather than `timeupdate`: the latter fires about four
+// times a second, which would let the audio run into the next sentence.
+function watchOneShot() {
+    if (oneShotFrame || !oneShot) return;
+    oneShotFrame = requestAnimationFrame(() => {
+        oneShotFrame = null;
+        if (!oneShot) return;
+        if (player.currentTime >= oneShot.end) {
+            finishOneShot();
+            return;
+        }
+        if (!player.paused) watchOneShot();
+    });
+}
+
+function playSentence(idx) {
+    if (idx < 0 || idx >= sentences.length) return;
+    const { start, end } = sentences[idx];
+
+    stopOneShot();
+    if (end > start) {
+        oneShot = { index: idx, start, end };
+    }
+    player.currentTime = start;
+    const started = player.play();
+    if (started && typeof started.catch === 'function') {
+        started.catch(() => {});
+    }
+    watchOneShot();
+}
+
+// Both columns are rendered inside #transcript, so one delegated listener covers
+// the original lines and the translated ones.
+transcriptContainer?.addEventListener('click', (e) => {
+    const sentence = e.target.closest('.sentence');
+    if (!sentence) return;
+    const idx = Number(sentence.dataset.index);
+    if (Number.isInteger(idx)) playSentence(idx);
+});
+
+// Playback started from the player controls means the whole track; only the
+// player resuming inside the sentence it is already playing keeps the stop point.
+player.addEventListener('play', () => {
+    if (oneShot) {
+        const { start, end } = oneShot;
+        if (player.currentTime >= start - ONE_SHOT_TOLERANCE && player.currentTime < end) return;
+    }
+    stopOneShot();
+});
 
 function getPrevPhraseIdx() {
     const active = findActiveSentenceIndex(player.currentTime);
@@ -193,24 +256,31 @@ function getNextPhraseIdx() {
     return -1;
 }
 
-function sentenceElement(idx) {
-    return document.querySelector(`.sentence-line[data-idx="${idx}"]`);
+// The original line and its translated twin share the index, so both light up.
+function setSentenceActive(idx, active) {
+    document.querySelectorAll(`.sentence[data-index="${idx}"]`).forEach((el) => {
+        el.classList.toggle('active', active);
+    });
 }
 
 function highlightSentence(idx) {
     if (idx === activeSentenceIndex) return;
 
     if (activeSentenceIndex >= 0) {
-        sentenceElement(activeSentenceIndex)?.classList.remove('active');
+        setSentenceActive(activeSentenceIndex, false);
     }
     activeSentenceIndex = idx;
 
     if (idx >= 0) {
-        sentenceElement(idx)?.classList.add('active');
+        setSentenceActive(idx, true);
     }
 }
 
 player.addEventListener('timeupdate', () => {
+    if (oneShot && player.currentTime >= oneShot.end) {
+        finishOneShot();
+        return;
+    }
     highlightSentence(findActiveSentenceIndex(player.currentTime));
 });
 
@@ -249,14 +319,14 @@ function pollStatus() {
 if (prevPhraseBtn) {
     prevPhraseBtn.addEventListener('click', () => {
         const idx = getPrevPhraseIdx();
-        if (idx >= 0) playPhrase(idx);
+        if (idx >= 0) playSentence(idx);
     });
 }
 
 if (nextPhraseBtn) {
     nextPhraseBtn.addEventListener('click', () => {
         const idx = getNextPhraseIdx();
-        if (idx >= 0) playPhrase(idx);
+        if (idx >= 0) playSentence(idx);
     });
 }
 
