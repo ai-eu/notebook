@@ -817,6 +817,7 @@ class TranslationBackend:
     max_output_tokens: int
     tokens_per_minute: int
     output_tokens_per_minute: int
+    timeout: float = 90.0
 
 
 def translation_backend(groq_key: str | None) -> TranslationBackend:
@@ -836,6 +837,8 @@ def translation_backend(groq_key: str | None) -> TranslationBackend:
             max_output_tokens=settings.gemini_max_output_tokens,
             tokens_per_minute=0,
             output_tokens_per_minute=0,
+            # A thinking model under parallel load needs far more than a Groq chat call.
+            timeout=180.0,
         )
 
     if not groq_key:
@@ -919,11 +922,13 @@ async def _translate_batch(
                 backend.url,
                 json=payload,
                 headers=headers,
-                timeout=90.0,
+                timeout=backend.timeout,
                 max_retries=1,
             )
         except httpx.HTTPError as exc:
-            raise TranslationError(f"Translation request failed: {exc}") from exc
+            raise TranslationError(
+                f"Translation request failed: {type(exc).__name__}: {exc}"
+            ) from exc
 
         if response.status_code in (401, 403):
             raise TranslationError(
