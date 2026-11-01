@@ -1,7 +1,5 @@
-import asyncio
-import logging
-
 from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi.responses import JSONResponse
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -9,7 +7,8 @@ from app.auth import require_user
 from app.config import settings
 from app.database import get_db
 from app.models import Recording, User
-from app.services.formatter import LANGUAGE_NAMES, TranslationError, translate_sentences
+from app.services import translation_jobs
+from app.services.formatter import LANGUAGE_NAMES
 from app.services.groq import resolve_groq_key
 from app.services.storage.archive import (
     enqueue_artifact_cleanup,
@@ -18,31 +17,15 @@ from app.services.storage.archive import (
 from app.services.storage.artifacts import (
     KIND_SENTENCES,
     delete_artifact,
-    dump_json,
     ensure_artifacts,
     load_sentences,
     load_translation,
-    put_artifact,
     text_sha256,
     translation_kind,
 )
 from app.utils import resolve_recording_path
 
 router = APIRouter(prefix="/api/translate", tags=["translate"])
-
-# One translation request at a time per (recording, language). Concurrent readers
-# otherwise pay for the same Groq call and race on the cache file.
-_locks: dict[tuple[object, str, str], asyncio.Lock] = {}
-
-
-def _translation_lock(recording_id: str, lang: str) -> asyncio.Lock:
-    # Keyed by loop as well: tests create a fresh loop per scenario.
-    key = (asyncio.get_running_loop(), recording_id, lang)
-    lock = _locks.get(key)
-    if lock is None:
-        lock = asyncio.Lock()
-        _locks[key] = lock
-    return lock
 
 
 def _paragraph_indexes(paragraphs: list[list[str]]) -> list[int]:
@@ -75,16 +58,6 @@ def _translation_payload(
         "paragraphs": _paragraph_indexes(paragraphs),
         "cached": cached,
     }
-
-
-def _join_paragraphs(sentences: list[str], paragraphs: list[list[str]]) -> str:
-    """Write translated sentences back with the paragraph breaks of the source."""
-    blocks: list[str] = []
-    offset = 0
-    for paragraph in paragraphs:
-        blocks.append("\n".join(sentences[offset : offset + len(paragraph)]))
-        offset += len(paragraph)
-    return "\n\n".join(blocks) + "\n"
 
 
 async def _recording_for_user(
@@ -159,66 +132,29 @@ async def get_translation(
         )
 
     api_key = resolve_groq_key(user)
-    if not api_key:
+    if not api_key and not settings.gemini_api_key:
         raise HTTPException(
             status_code=401,
             detail="No Groq API key available for this user",
         )
 
-    lock = _translation_lock(recording.recording_id, lang)
-    async with lock:
-        # Another request may have completed the translation while we waited.
-        cached_translation = await load_translation(db, recording.recording_id, lang)
-        if (
-            not refresh
-            and cached_translation
-            and cached_translation.get("source_sha256") == source_sha
-            and len(cached_translation.get("sentences") or []) == len(sentences)
-        ):
-            return _translation_payload(
-                recording_id,
-                lang,
-                cached_translation["sentences"],
-                paragraphs,
-                cached=True,
-            )
+    # A finished attempt reports its failure once; the next request starts over.
+    failure = translation_jobs.pop_error(recording.recording_id, lang)
+    if failure is not None:
+        raise HTTPException(status_code=failure[0], detail=failure[1])
 
-        try:
-            translated = await translate_sentences(sentences, lang, api_key)
-        except TranslationError as exc:
-            logging.warning(
-                "Translation failed for %s (%s, %d sentences): %s",
-                recording_id,
-                lang,
-                len(sentences),
-                exc,
-            )
-            raise HTTPException(status_code=502, detail=str(exc))
-
-        content = dump_json(
-            {
-                "version": 1,
-                "source_sha256": source_sha,
-                "sentences": translated,
-            }
-        )
-        await put_artifact(
-            db,
-            recording.recording_id,
-            translation_kind(lang),
-            content,
-        )
-
-        # Keep the legacy TXT around for export/archive and old clients.
-        try:
-            cache_path = resolve_recording_path(recording.folder_path) / f"formatted-{lang}.txt"
-            cache_path.write_text(
-                _join_paragraphs(translated, paragraphs), encoding="utf-8"
-            )
-        except OSError:
-            pass
-
-    return _translation_payload(recording_id, lang, translated, paragraphs, cached=False)
+    job = translation_jobs.start_job(
+        recording_id=recording.recording_id,
+        folder_path=recording.folder_path,
+        lang=lang,
+        sentences=sentences,
+        paragraphs=paragraphs,
+        source_sha=source_sha,
+        api_key=api_key,
+    )
+    # A long transcript takes minutes because of the provider rate limits, so the page
+    # polls this endpoint until the translation artifact exists.
+    return JSONResponse(translation_jobs.progress_payload(job), status_code=202)
 
 
 @router.delete("/{recording_id}")
@@ -235,6 +171,7 @@ async def delete_translation(
         raise HTTPException(status_code=400, detail=f"Unsupported language: {lang}")
 
     recording = await _recording_for_user(recording_id, user, db)
+    translation_jobs.cancel_job(recording.recording_id, lang)
     await delete_artifact(db, recording.recording_id, translation_kind(lang))
     await enqueue_artifact_cleanup(recording.recording_id, translation_kind(lang))
     # Old archives used the "formatted-<lang>" kind.

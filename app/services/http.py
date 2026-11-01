@@ -39,12 +39,14 @@ async def close_client() -> None:
     _client_loop = None
 
 
-def _retry_after(response: httpx.Response) -> float | None:
-    value = response.headers.get("retry-after") or response.headers.get("Retry-After")
+def retry_after(response: httpx.Response, cap: float = 30.0) -> float | None:
+    """Seconds the upstream asked us to wait, clamped to ``cap``."""
+    headers = getattr(response, "headers", None) or {}
+    value = headers.get("retry-after") or headers.get("Retry-After")
     if not value:
         return None
     try:
-        return min(float(value), 30.0)
+        return min(float(value), cap)
     except ValueError:
         return None
 
@@ -65,6 +67,7 @@ async def post_with_retries(
     headers: dict[str, str],
     timeout: float,
     max_retries: int = 3,
+    max_delay: float = 30.0,
 ) -> httpx.Response:
     """POST with retries on network errors, 429 and 5xx.
 
@@ -94,7 +97,7 @@ async def post_with_retries(
         if response.status_code == 429:
             if attempt == max_retries - 1:
                 return response
-            wait = _retry_after(response) or (2 ** attempt)
+            wait = retry_after(response, max_delay) or (2 ** attempt)
             logging.warning("Rate limited (attempt %d); retry in %.1fs", attempt + 1, wait)
             await asyncio.sleep(wait)
             continue

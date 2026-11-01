@@ -35,6 +35,7 @@ app/
     groq.py         — валидация ключей Groq
     jobs.py         — JobRunner с семафором и graceful shutdown
     processing.py   — конвейер обработки (транскрибация + TTS), recovery
+    translation_jobs.py — фоновые задачи перевода (прогресс, артефакт-кэш)
     tts.py          — синтез речи, провайдеры
     storage/        — archive.py, artifacts.py, cache.py,
                       maintenance.py, telegram.py
@@ -88,6 +89,7 @@ MOCK_TRANSCRIPTION=true .venv/bin/uvicorn app.main:app --host 0.0.0.0 --port 800
 .venv/bin/python -m app.cli list-users
 .venv/bin/python -m app.cli rebind-key <user_id> gsk_...
 .venv/bin/python -m app.cli verify-key <user_id>
+.venv/bin/python -m app.cli verify-translation-key   # общий ключ Gemini (или режим Groq)
 .venv/bin/python -m app.cli delete-user <user_id> [--purge-files]
 .venv/bin/python -m app.cli tg-discover
 .venv/bin/python -m app.cli storage-status
@@ -140,9 +142,10 @@ MOCK_TRANSCRIPTION=true .venv/bin/uvicorn app.main:app --host 0.0.0.0 --port 800
 - Единый источник предложений — артефакт `sentences` в SQLite: из него строится колонка оригинала (с таймингами) и он же переводится, поэтому пары всегда 1:1. Абзацы сохраняются в обеих колонках (`paragraphs` в ответе API). `formatted.txt` — производный рендер для скачивания.
 - Колонка перевода показывается выбором языка в компактной выпадайке (коды en/uk/pt/es); выбора по умолчанию нет (перевод не выводится даже при наличии кэша), состояние не сохраняется.
 - Перевод кэшируется как артефакт `translation:<lang>` с `source_sha256` (инвалидация по содержимому) и архивируется в Telegram-канал.
-- Настройки: `TRANSLATION_ENABLED`, `TRANSLATION_TARGET_LANGUAGES`, `TRANSLATION_DEFAULT_LANGUAGE`, `TRANSLATION_BATCH_CHARS`, `TRANSLATION_CONCURRENCY`.
-- API: `GET /api/translate/{recording_id}?lang=<code>`, `DELETE /api/translate/{recording_id}?lang=<code>`. При сбое Groq — HTTP 502, причина в `detail` и в логе (`logging.warning`). Неверное число строк от модели — ошибка, а не пустые переводы.
-- Перевод идёт синхронно (батчами), поэтому в nginx подняты `proxy_read_timeout`/`proxy_send_timeout` до 300s.
+- Настройки: `TRANSLATION_ENABLED`, `TRANSLATION_TARGET_LANGUAGES`, `TRANSLATION_DEFAULT_LANGUAGE`, `TRANSLATION_BATCH_CHARS`, `TRANSLATION_CONCURRENCY`, `TRANSLATION_MODEL`, `TRANSLATION_MAX_OUTPUT_TOKENS`, `TRANSLATION_TOKENS_PER_MINUTE`, `TRANSLATION_OUTPUT_TOKENS_PER_MINUTE`.
+- Провайдер перевода: один общий ключ Google AI Studio (`GEMINI_API_KEY`, модели `GEMINI_MODEL`/`GEMINI_MAX_OUTPUT_TOKENS`) на весь инстанс — при его наличии перевод идёт в Gemini через OpenAI-совместимый endpoint. Ключ не указан → перевод идёт на Groq с ключом пользователя (`resolve_groq_key`); логин и Whisper по-прежнему требуют Groq-ключ. Проверка ключа: `python -m app.cli verify-translation-key`.
+- API: `GET /api/translate/{recording_id}?lang=<code>` отдаёт готовый перевод (200) либо `202 {"status":"running","done","total"}` — страница опрашивает эндпоинт, пока артефакт не появится. `DELETE /api/translate/{recording_id}?lang=<code>` сбрасывает кэш и отменяет идущую задачу. Ошибка Groq — HTTP 502, исчерпанный лимит Groq — HTTP 429, причина в `detail` и в логе (`logging.warning`); следующий запрос начинает попытку заново. Неверное число строк от модели — ошибка, а не пустые переводы.
+- Перевод идёт в фоновой задаче (`services/translation_jobs.py` через `JobRunner`), потому что Groq на free-tier даёт ~1000 выходных токенов в минуту: длинный транскрипт переводится минутами, а nginx/CDN режут такие синхронные запросы. Батчи разнесены по минутному окну (`_TokenBudget`), `max_tokens` не превышает `TRANSLATION_MAX_OUTPUT_TOKENS`, 429 повторяется с паузой `Retry-After` и тормозит все батчи, а не только сбойный.
 
 ### 2. Интерактивное обучение по транскрипту
 - Карточки «пропущенное слово» (cloze) из транскрипта.

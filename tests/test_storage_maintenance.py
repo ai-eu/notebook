@@ -84,7 +84,11 @@ def test_zero_retention_evicts_immediately_and_removes_the_folder(monkeypatch, t
     archive_now()
     monkeypatch.setattr(settings, "local_retention_days", 0)
 
-    result = asyncio.run(archive.cleanup_local_audio())
+    # The Windows clock ticks in ~15 ms steps, so "now" may equal archived_at; ask for a
+    # moment later to keep the strict `archived_at < cutoff` comparison deterministic.
+    result = asyncio.run(
+        archive.cleanup_local_audio(now=datetime.now(timezone.utc) + timedelta(seconds=1))
+    )
 
     assert result["removed"] >= 2
     assert not folder.exists()

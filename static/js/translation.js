@@ -89,14 +89,49 @@
 
     // --- Loading translation ---
 
+    // A long transcript is translated by a background job: the endpoint answers 202
+    // with progress until the translation is stored, so the page polls instead of
+    // waiting for a single request that a proxy would cut off.
+    const POLL_DELAY_MS = 1500;
+    const MAX_POLLS = 400;
+
+    function sleep(ms) {
+        return new Promise((resolve) => setTimeout(resolve, ms));
+    }
+
+    function progressMessage(data) {
+        const done = Number(data.done) || 0;
+        const total = Number(data.total) || 0;
+        return total ? `Перевожу… ${done} из ${total}` : "Перевожу…";
+    }
+
     async function loadTranslation(lang) {
         if (!translatedSentences) return;
         translatedSentences.textContent = "";
+        hint.textContent = "Перевожу…";
+        hint.classList.remove("hidden");
 
-        try {
-            const res = await fetch(
-                `/api/translate/${encodeURIComponent(recordingId)}?lang=${encodeURIComponent(lang)}`
-            );
+        for (let attempt = 0; attempt < MAX_POLLS; attempt++) {
+            let res;
+            try {
+                res = await fetch(
+                    `/api/translate/${encodeURIComponent(recordingId)}?lang=${encodeURIComponent(lang)}`
+                );
+            } catch (exc) {
+                fail("Не удалось загрузить перевод: " + String(exc));
+                return;
+            }
+
+            if (res.status === 202) {
+                try {
+                    hint.textContent = progressMessage(await res.json());
+                } catch (exc) {
+                    hint.textContent = progressMessage({});
+                }
+                await sleep(POLL_DELAY_MS);
+                continue;
+            }
+
             if (!res.ok) {
                 fail(
                     res.status === 404
@@ -105,7 +140,15 @@
                 );
                 return;
             }
-            const data = await res.json();
+
+            let data;
+            try {
+                data = await res.json();
+            } catch (exc) {
+                fail("Не удалось загрузить перевод: " + String(exc));
+                return;
+            }
+
             const sentences = data.sentences || [];
             const keepHighlight = highlightedIndex;
 
@@ -114,9 +157,12 @@
 
             loadedLang = lang;
             highlightPair(keepHighlight);
-        } catch (exc) {
-            fail("Не удалось загрузить перевод: " + String(exc));
+            hint.textContent = "";
+            hint.classList.add("hidden");
+            return;
         }
+
+        fail("Перевод занимает слишком много времени. Попробуйте позже.");
     }
 
     // The API explains the reason in `detail` (bad key, rate limit, model error).

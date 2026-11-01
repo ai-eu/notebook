@@ -102,8 +102,28 @@ class Settings(BaseSettings):
     translation_target_languages: list[str] = ["en", "uk", "pt-PT", "es"]
     translation_default_language: str = "uk"
     translation_batch_size: int = 10
-    translation_batch_chars: int = 3000
+    # ~2.7 characters of translation per output token: 2000 characters stay below
+    # the per-minute output budget of the free Groq tier.
+    translation_batch_chars: int = 2000
     translation_concurrency: int = 2
+    # Chat model used for translation; empty means ``groq_chat_model``. A model without
+    # the 1000 output-tokens-per-minute cap (for example ``openai/gpt-oss-120b``)
+    # translates long transcripts far faster at the cost of the occasional retry.
+    translation_model: str = ""
+    # Groq reserves ``max_tokens`` against the output budget, so a single request
+    # must never ask for more completion tokens than a minute allows.
+    translation_max_output_tokens: int = 1000
+    # Groq free tier: 8000 tokens in total and 1000 output tokens per minute.
+    # 0 disables pacing and leaves only the retries.
+    translation_tokens_per_minute: int = 8000
+    translation_output_tokens_per_minute: int = 1000
+    # One Google AI Studio key shared by every account. When it is set the translation
+    # goes to Gemini through the OpenAI-compatible endpoint; without it the app falls
+    # back to Groq with the user's own (or the server) Groq key.
+    gemini_api_key: str | None = None
+    gemini_model: str = "gemini-2.5-flash"
+    gemini_base_url: str = "https://generativelanguage.googleapis.com/v1beta/openai"
+    gemini_max_output_tokens: int = 2400
 
     @property
     def effective_local_retention_days(self) -> int:

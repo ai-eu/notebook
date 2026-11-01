@@ -1,4 +1,5 @@
 import asyncio
+from datetime import datetime, timedelta, timezone
 
 import httpx
 from sqlalchemy import select
@@ -72,7 +73,11 @@ def test_audio_route_pulls_evicted_audio_into_the_cache(monkeypatch, tmp_path, b
 
             await archive.archive_recording("rec-1")
             monkeypatch.setattr(settings, "local_retention_days", 0)
-            await archive.cleanup_local_audio()
+            # Windows keeps the clock in ~15 ms steps: ask for a later "now" so the strict
+            # `archived_at < cutoff` comparison is deterministic.
+            await archive.cleanup_local_audio(
+                now=datetime.now(timezone.utc) + timedelta(seconds=1)
+            )
             assert not folder.exists()
 
             monkeypatch.setattr(settings, "cache_dir", str(tmp_path / "cache"))

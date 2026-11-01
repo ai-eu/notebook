@@ -2,6 +2,8 @@ import argparse
 import asyncio
 import sys
 from datetime import datetime, timezone
+
+import httpx
 from sqlalchemy import select
 from app.config import settings
 from app.database import init_db, AsyncSessionLocal
@@ -112,6 +114,39 @@ async def verify_key(user_id: int):
             print(f"User {user_id} not found.")
             return
         await _check_and_store(db, user, await validate_key(user.groq_key))
+
+
+async def verify_translation_key():
+    """Check the shared Google key, or report that translation goes to Groq."""
+    if not settings.gemini_api_key:
+        print("GEMINI_API_KEY is not set: translation uses Groq with the user's key.")
+        return
+
+    url = f"{settings.gemini_base_url.rstrip('/')}/models"
+    try:
+        async with httpx.AsyncClient(timeout=settings.groq_validation_timeout) as client:
+            response = await client.get(
+                url, headers={"Authorization": f"Bearer {settings.gemini_api_key}"}
+            )
+    except httpx.HTTPError as exc:
+        print(f"Gemini is unreachable: {exc}")
+        return
+
+    if response.status_code in (401, 403):
+        print(f"Gemini rejected the key (HTTP {response.status_code}).")
+        return
+    if response.status_code != 200:
+        print(f"Gemini answered HTTP {response.status_code}: {response.text[:200]}")
+        return
+
+    try:
+        models = [str(m.get("id")) for m in response.json().get("data", [])]
+    except (AttributeError, TypeError, ValueError):
+        models = []
+    print(f"Gemini key is valid; translation uses {settings.gemini_model}.")
+    if models and settings.gemini_model not in models:
+        listed = ", ".join(sorted(models)[:10])
+        print(f"Warning: {settings.gemini_model} is not listed for this key: {listed}")
 
 
 async def _check_and_store(db, user: User, status: str) -> None:
@@ -387,6 +422,11 @@ def main():
     p_verify = sub.add_parser("verify-key", help="Check a user's Groq key against the API")
     p_verify.add_argument("user_id", type=int)
 
+    sub.add_parser(
+        "verify-translation-key",
+        help="Check the shared Gemini key (or report that translation uses Groq)",
+    )
+
     sub.add_parser("tg-discover", help="List the chats the bot has seen, to find the channel id")
 
     sub.add_parser("tg-status", help="Show the Telegram archive configuration and counters")
@@ -440,6 +480,8 @@ def main():
         asyncio.run(delete_user(args.user_id, purge_files=args.purge_files))
     elif args.cmd == "verify-key":
         asyncio.run(verify_key(args.user_id))
+    elif args.cmd == "verify-translation-key":
+        asyncio.run(verify_translation_key())
     elif args.cmd == "tg-discover":
         asyncio.run(tg_discover())
     elif args.cmd == "tg-status":

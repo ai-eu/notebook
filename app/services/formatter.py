@@ -3,19 +3,34 @@ import json
 import logging
 import re
 import textwrap
-from typing import Any
+import time
+from dataclasses import dataclass
+from typing import Any, Callable
 
 import httpx
 from app.config import settings
-from app.services.http import post_with_retries
+from app.services.http import post_with_retries, retry_after
 
 MAX_LINE_LENGTH = 250
 PARAGRAPH_GAP_SECONDS = 1.5
 GROQ_CHAT_URL = "https://api.groq.com/openai/v1/chat/completions"
 
+# Groq limits the chat model per minute: the budget below spreads the batches over
+# that window instead of sending them all at once and collecting 429s.
+TRANSLATION_WINDOW_SECONDS = 60.0
+THROTTLE_ATTEMPTS = 4
+THROTTLE_BACKOFF_SECONDS = 5.0
+MAX_THROTTLE_WAIT_SECONDS = 45.0
+# The wording of the instructions, in characters, is part of the prompt budget.
+PROMPT_OVERHEAD_CHARS = 700
+
 
 class TranslationError(Exception):
     """Raised when translation via Groq fails."""
+
+
+class TranslationRateLimitError(TranslationError):
+    """Raised when Groq throttles the translation longer than the retries allow."""
 
 
 # Language names used in the UI language selector.
@@ -722,11 +737,135 @@ def _parse_translation_content(content: str, expected: int) -> list[str]:
     return translated
 
 
+class _TokenBudget:
+    """Keep Groq calls inside the per-minute token limits of the key.
+
+    Groq answers 429 as soon as a minute holds more tokens than the key allows, and a
+    long transcript needs several batches. The budget slides over a minute and counts
+    the prompt plus ``max_tokens``, because that is what Groq reserves per request.
+    ``penalize`` holds back every pending batch after a 429 instead of letting the
+    siblings keep hammering the limit.
+    """
+
+    def __init__(self, tokens_per_minute: int, output_tokens_per_minute: int) -> None:
+        self._total_limit = max(0, tokens_per_minute)
+        self._output_limit = max(0, output_tokens_per_minute)
+        self._events: list[tuple[float, int, int]] = []
+        self._resume_at = 0.0
+
+    async def acquire(self, total: int, output: int) -> None:
+        while True:
+            now = time.monotonic()
+            if now < self._resume_at:
+                await asyncio.sleep(min(self._resume_at - now, MAX_THROTTLE_WAIT_SECONDS))
+                continue
+            if not self._total_limit and not self._output_limit:
+                return
+
+            while self._events and now - self._events[0][0] >= TRANSLATION_WINDOW_SECONDS:
+                self._events.pop(0)
+            if not self._events or self._fits(total, output):
+                self._events.append((now, total, output))
+                return
+            await asyncio.sleep(self._wait_seconds(now))
+
+    def penalize(self, seconds: float) -> None:
+        self._resume_at = max(
+            self._resume_at,
+            time.monotonic() + min(max(seconds, 0.0), MAX_THROTTLE_WAIT_SECONDS),
+        )
+
+    def _fits(self, total: int, output: int) -> bool:
+        used_total = sum(event[1] for event in self._events)
+        used_output = sum(event[2] for event in self._events)
+        return self._within_limit(used_total + total, used_output + output)
+
+    def _within_limit(self, total: int, output: int) -> bool:
+        return (not self._total_limit or total <= self._total_limit) and (
+            not self._output_limit or output <= self._output_limit
+        )
+
+    def _wait_seconds(self, now: float) -> float:
+        oldest = self._events[0][0] if self._events else now
+        return max(0.05, TRANSLATION_WINDOW_SECONDS - (now - oldest) + 0.05)
+
+
+def _translation_max_tokens(batch_text: str, cap: int) -> int:
+    """Request no more completion tokens than the provider budget allows.
+
+    A translated line is about as long as its source, so half of the batch text plus a
+    margin is a safe ceiling. Groq rejects a request that asks for more output tokens
+    than a minute allows, however often it is retried.
+    """
+    estimate = max(400, len(batch_text) // 2 + 300)
+    return min(estimate, cap) if cap > 0 else estimate
+
+
+@dataclass(frozen=True)
+class TranslationBackend:
+    """Where a translation request goes and what limits apply to it."""
+
+    name: str
+    url: str
+    api_key: str
+    model: str
+    extra: dict[str, Any]
+    max_output_tokens: int
+    tokens_per_minute: int
+    output_tokens_per_minute: int
+
+
+def translation_backend(groq_key: str | None) -> TranslationBackend:
+    """Pick the provider: the shared Gemini key wins, the Groq key is the fallback.
+
+    Gemini free tier is limited by requests, not by output tokens, so no token budget is
+    applied there: the retries in ``_translate_batch`` handle a 429 on their own.
+    """
+    if settings.gemini_api_key:
+        return TranslationBackend(
+            name="Gemini",
+            url=f"{settings.gemini_base_url.rstrip('/')}/chat/completions",
+            api_key=settings.gemini_api_key,
+            model=settings.gemini_model,
+            extra={},
+            max_output_tokens=settings.gemini_max_output_tokens,
+            tokens_per_minute=0,
+            output_tokens_per_minute=0,
+        )
+
+    if not groq_key:
+        raise TranslationError("No API key available for translation")
+
+    model = settings.translation_model or settings.groq_chat_model
+    return TranslationBackend(
+        name="Groq",
+        url=GROQ_CHAT_URL,
+        api_key=groq_key,
+        model=model,
+        # Reasoning tokens count against max_tokens and would truncate the answer.
+        extra={"reasoning_effort": "low"} if model.startswith("openai/gpt-oss") else {},
+        max_output_tokens=settings.translation_max_output_tokens,
+        tokens_per_minute=settings.translation_tokens_per_minute,
+        output_tokens_per_minute=settings.translation_output_tokens_per_minute,
+    )
+
+
+def _rate_limit_error(response: httpx.Response) -> TranslationRateLimitError:
+    try:
+        reason = str((response.json().get("error") or {}).get("message") or "")
+    except (AttributeError, TypeError, ValueError):
+        reason = ""
+    if reason:
+        logging.warning("Groq rate limit: %s", reason)
+    return TranslationRateLimitError("Groq rate limit reached. Try again later.")
+
+
 async def _translate_batch(
     batch: list[str],
     target_lang: str,
     target_name: str,
-    api_key: str,
+    backend: TranslationBackend,
+    budget: _TokenBudget,
 ) -> list[str]:
     batch_text = "\n".join(f"{i + 1}. {s}" for i, s in enumerate(batch))
     prompt = (
@@ -747,38 +886,60 @@ async def _translate_batch(
         "Output:\n"
     )
 
+    max_tokens = _translation_max_tokens(batch_text, backend.max_output_tokens)
     payload = {
-        "model": settings.groq_chat_model,
+        "model": backend.model,
         "messages": [
             {"role": "system", "content": "You are a helpful translator."},
             {"role": "user", "content": prompt},
         ],
         "temperature": 0.3,
-        "max_tokens": max(400, len(batch_text) // 2 + 300),
+        "max_tokens": max_tokens,
+        **backend.extra,
     }
     headers = {
-        "Authorization": f"Bearer {api_key}",
+        "Authorization": f"Bearer {backend.api_key}",
         "Content-Type": "application/json",
     }
+    cost = (len(prompt) + PROMPT_OVERHEAD_CHARS) // 4 + max_tokens
 
     translated: list[str] = []
-    for attempt in range(2):
+    attempts = 0
+    throttled = 0
+    while attempts < 2:
+        attempts += 1
+        await budget.acquire(cost, max_tokens)
         try:
             response = await post_with_retries(
-                GROQ_CHAT_URL,
+                backend.url,
                 json=payload,
                 headers=headers,
-                timeout=60.0,
+                timeout=90.0,
+                max_retries=1,
             )
         except httpx.HTTPError as exc:
             raise TranslationError(f"Translation request failed: {exc}") from exc
 
         if response.status_code in (401, 403):
-            raise TranslationError(f"Groq rejected the API key (HTTP {response.status_code})")
+            raise TranslationError(
+                f"{backend.name} rejected the API key (HTTP {response.status_code})"
+            )
         if response.status_code == 429:
-            raise TranslationError("Groq rate limit reached. Try again later.")
+            throttled += 1
+            if throttled >= THROTTLE_ATTEMPTS:
+                raise _rate_limit_error(response)
+            wait = retry_after(response, MAX_THROTTLE_WAIT_SECONDS) or (
+                THROTTLE_BACKOFF_SECONDS * throttled
+            )
+            logging.warning("Translation throttled (attempt %d); waiting %.1fs", throttled, wait)
+            budget.penalize(wait)
+            # A throttled batch is not one of the two line-count attempts.
+            attempts -= 1
+            continue
         if response.status_code >= 400:
-            raise TranslationError(f"Groq API error {response.status_code}: {response.text[:200]}")
+            raise TranslationError(
+                f"{backend.name} API error {response.status_code}: {response.text[:200]}"
+            )
 
         try:
             data = response.json()
@@ -793,7 +954,7 @@ async def _translate_batch(
             "Translation batch returned %d lines for %d sentences (attempt %d)",
             len(translated),
             len(batch),
-            attempt + 1,
+            attempts,
         )
 
     raise TranslationError(
@@ -806,21 +967,40 @@ async def translate_sentences(
     target_lang: str,
     api_key: str | None,
     batch_size: int | None = None,
+    progress: Callable[[int, int], None] | None = None,
 ) -> list[str]:
-    """Translate sentences in parallel character-budgeted batches."""
-    if not api_key:
-        raise TranslationError("No API key available for translation")
+    """Translate sentences in parallel character-budgeted batches.
 
+    ``progress`` receives the number of translated sentences and the total after every
+    finished batch, so a background job can show how far along it is.
+    """
     if not sentences:
         return []
 
+    backend = translation_backend(api_key)
     target_name = LANGUAGE_NAMES.get(target_lang, target_lang)
     batches = _translation_batches(sentences, batch_size)
+    budget = _TokenBudget(backend.tokens_per_minute, backend.output_tokens_per_minute)
     semaphore = asyncio.Semaphore(max(1, settings.translation_concurrency))
+    done = 0
+    counter = asyncio.Lock()
 
     async def run(batch: list[str]) -> list[str]:
+        nonlocal done
         async with semaphore:
-            return await _translate_batch(batch, target_lang, target_name, api_key)
+            result = await _translate_batch(batch, target_lang, target_name, backend, budget)
+        async with counter:
+            done += len(result)
+            if progress is not None:
+                progress(done, len(sentences))
+        return result
 
-    translated_batches = await asyncio.gather(*(run(batch) for batch in batches))
-    return [line for batch in translated_batches for line in batch]
+    # Every batch runs to completion: one throttled batch must not throw away the work
+    # of the others, it only fails the translation once its own retries are exhausted.
+    results = await asyncio.gather(*(run(batch) for batch in batches), return_exceptions=True)
+    for result in results:
+        if isinstance(result, TranslationError):
+            raise result
+        if isinstance(result, BaseException):
+            raise TranslationError(str(result)) from result
+    return [line for batch in results for line in batch]

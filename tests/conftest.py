@@ -29,9 +29,10 @@ from app.services.storage import artifacts as artifacts_store  # noqa: E402
 class FakeResponse:
     """Stand-in for httpx.Response."""
 
-    def __init__(self, status_code: int, payload: dict | None = None):
+    def __init__(self, status_code: int, payload: dict | None = None, headers: dict | None = None):
         self.status_code = status_code
         self._payload = payload if payload is not None else {}
+        self.headers = headers or {}
         self.text = json.dumps(self._payload)
 
     def json(self):
@@ -254,10 +255,12 @@ def reset_db():
     import shutil
 
     from app import auth
+    from app.services import translation_jobs
     from app.services.storage import cache
 
     auth._login_failures.clear()
     cache._locks.clear()
+    translation_jobs._jobs.clear()
     # DATA_DIR holds the recordings and the audio cache: neither may leak between tests.
     shutil.rmtree(settings.data_dir_absolute, ignore_errors=True)
 
