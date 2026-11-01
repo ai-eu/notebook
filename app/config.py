@@ -121,8 +121,9 @@ class Settings(BaseSettings):
     # goes to Gemini through the OpenAI-compatible endpoint; without it the app falls
     # back to Groq with the user's own (or the server) Groq key.
     gemini_api_key: str | None = None
-    gemini_model: str = "gemini-2.5-flash"
+    gemini_model: str = "gemini-3.8-flash"
     gemini_base_url: str = "https://generativelanguage.googleapis.com/v1beta/openai"
+    # Flash models spend output tokens on thinking, so the answer needs room.
     gemini_max_output_tokens: int = 2400
 
     @property

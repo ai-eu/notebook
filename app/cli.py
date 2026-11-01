@@ -144,9 +144,11 @@ async def verify_translation_key():
     except (AttributeError, TypeError, ValueError):
         models = []
     print(f"Gemini key is valid; translation uses {settings.gemini_model}.")
-    if models and settings.gemini_model not in models:
-        listed = ", ".join(sorted(models)[:10])
-        print(f"Warning: {settings.gemini_model} is not listed for this key: {listed}")
+    # The listing prefixes every id with "models/", the chat call wants the bare name.
+    listed = {model.removeprefix("models/") for model in models}
+    if listed and settings.gemini_model not in listed:
+        print(f"Warning: {settings.gemini_model} is not listed for this key.")
+        print("Available flash models:", ", ".join(sorted(m for m in listed if "flash" in m)))
 
 
 async def _check_and_store(db, user: User, status: str) -> None:

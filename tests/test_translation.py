@@ -454,9 +454,27 @@ def test_translate_prefers_the_shared_gemini_key(monkeypatch):
     assert request["url"] == f"{settings.gemini_base_url}/chat/completions"
     assert request["headers"]["Authorization"] == "Bearer AIza-test-key"
     assert request["json"]["model"] == "gemini-2.5-flash"
-    # Gemini is not a reasoning-only model: no extra payload fields, room for thinking.
-    assert "reasoning_effort" not in request["json"]
+    # Flash models think by default: the answer needs a low, explicit thinking budget.
+    assert request["json"]["reasoning_effort"] == "low"
     assert request["json"]["max_tokens"] <= settings.gemini_max_output_tokens
+
+
+FENCED = '```json\n{"translations": ["Привіт светі.", "Це тест."]}\n```'
+
+
+def test_translate_accepts_a_fenced_json_answer(monkeypatch):
+    """Gemini wraps the JSON in ```json fences; the lines must still pair 1:1."""
+    sentences = ["Hello world.", "This is a test."]
+    fake = FakeAsyncClient(
+        FakeResponse(200, {"choices": [{"message": {"content": FENCED}}]})
+    )
+    monkeypatch.setattr(formatter.httpx, "AsyncClient", lambda **kwargs: fake)
+
+    result = asyncio.run(formatter.translate_sentences(sentences, "uk", KEY))
+
+    assert result == ["Привіт светі.", "Це тест."]
+    # One request: the fence is stripped instead of retrying a line-count mismatch.
+    assert len(fake.requests) == 1
 
 
 def test_translate_falls_back_to_groq_without_a_gemini_key(monkeypatch):

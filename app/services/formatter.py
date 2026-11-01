@@ -716,6 +716,10 @@ def _translation_batches(
 def _parse_translation_content(content: str, expected: int) -> list[str]:
     """Prefer the requested JSON array, but accept plain lines from older models."""
     stripped = content.strip()
+    # Gemini wraps the answer in a ```json fence although the prompt asks for bare JSON.
+    fenced = re.match(r"^```(?:json)?\s*(.*?)\s*```$", stripped, re.DOTALL)
+    if fenced:
+        stripped = fenced.group(1).strip()
     if stripped.startswith(("{", "[")):
         try:
             data = json.loads(stripped)
@@ -827,7 +831,8 @@ def translation_backend(groq_key: str | None) -> TranslationBackend:
             url=f"{settings.gemini_base_url.rstrip('/')}/chat/completions",
             api_key=settings.gemini_api_key,
             model=settings.gemini_model,
-            extra={},
+            # Flash models think by default; 18 s instead of 36 s per batch on the probe.
+            extra={"reasoning_effort": "low"},
             max_output_tokens=settings.gemini_max_output_tokens,
             tokens_per_minute=0,
             output_tokens_per_minute=0,
