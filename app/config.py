@@ -37,6 +37,17 @@ class Settings(BaseSettings):
     groq_chat_model: str = "openai/gpt-oss-20b"
     whisper_model: str = "whisper-large-v3"
     whisper_prompt: str = "Please transcribe with proper punctuation, sentence breaks, and paragraph breaks."
+    # --- Transcription provider (app/services/transcriber.py) ---
+    # groq | openrouter. Groq runs on the user's own key; openrouter runs on the
+    # shared OPENROUTER_API_KEY below, so login and smart formatting stay on Groq.
+    transcription_provider: str = "groq"
+    openrouter_api_key: str | None = None
+    openrouter_base_url: str = "https://openrouter.ai/api/v1"
+    # Nemotron 3.5 Transcribe: 40 languages, up to one hour of audio per request.
+    openrouter_transcription_model: str = "nvidia/nemotron-3.5-transcribe"
+    # Domain terms (names, jargon) to bias recognition toward. Empty by default:
+    # a provider that cannot use keyterms rejects the whole request with HTTP 400.
+    openrouter_keyterms: list[str] = []
     # --- Noise suppression before transcription (app/services/denoiser.py) ---
     # off | light (stationary noise: hum, hiss) | deep (adaptive, changing noise)
     denoise_level: str = "off"

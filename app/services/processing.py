@@ -19,7 +19,7 @@ from app.services.converter import (
     calculate_chunk_minutes,
 )
 from app.services.denoiser import denoise_to_mp3
-from app.services.groq import GroqAuthError, resolve_groq_key
+from app.services.groq import GroqAuthError, TranscriptionAuthError, resolve_groq_key
 from app.services.formatter import (
     MAX_LINE_LENGTH,
     build_sentence_document,
@@ -36,7 +36,11 @@ from app.services.storage.artifacts import (
     save_sentences,
     save_transcript,
 )
-from app.services.transcriber import transcribe_file, transcribe_chunks
+from app.services.transcriber import (
+    resolve_transcription_key,
+    transcribe_chunks,
+    transcribe_file,
+)
 from app.services.tts import (
     TTSAuthError,
     chunk_text,
@@ -95,9 +99,10 @@ async def process_recording(recording_id: str, *, resume_audio: bool = False):
         if not recording:
             return
 
-        # The key belongs to the uploader: transcription runs on their quota.
+        # Groq owns login and smart formatting; transcription may run on a shared key.
         user = await db.get(User, recording.user_id)
-        api_key = resolve_groq_key(user)
+        groq_key = resolve_groq_key(user)
+        api_key = resolve_transcription_key(user)
 
         recording.attempts = (recording.attempts or 0) + 1
         if recording.attempts > settings.max_job_attempts:
@@ -198,8 +203,8 @@ async def process_recording(recording_id: str, *, resume_audio: bool = False):
 
             transcript = clean_transcript(transcript)
             document = build_sentence_document(transcript)
-            if settings.smart_format and api_key:
-                document = await smart_format_document(document, api_key)
+            if settings.smart_format and groq_key:
+                document = await smart_format_document(document, groq_key)
             elif settings.smart_format:
                 logging.warning(
                     "Smart formatting is enabled, but the user has no Groq API key — skipping it."
@@ -225,12 +230,18 @@ async def process_recording(recording_id: str, *, resume_audio: bool = False):
             recording.updated_at = datetime.now(timezone.utc)
             await db.commit()
 
-        except GroqAuthError as exc:
-            logging.warning("Groq rejected the API key of user %s: %s", recording.user_id, exc)
-            if user:
+        except TranscriptionAuthError as exc:
+            logging.warning(
+                "Transcription provider rejected the key of user %s: %s", recording.user_id, exc
+            )
+            if user and isinstance(exc, GroqAuthError):
                 user.key_valid = False
             recording.status = "error"
-            recording.error_message = "Groq rejected the API key. Sign in again with a valid key."
+            recording.error_message = (
+                "Groq rejected the API key. Sign in again with a valid key."
+                if isinstance(exc, GroqAuthError)
+                else f"{exc}. Check OPENROUTER_API_KEY."
+            )
             recording.updated_at = datetime.now(timezone.utc)
             await db.commit()
             # Keep files for diagnostics.

@@ -15,7 +15,11 @@ GROQ_MODELS_URL = f"{GROQ_API_BASE}/models"
 GROQ_KEY_RE = re.compile(r"^gsk_[A-Za-z0-9]{20,}$")
 
 
-class GroqAuthError(Exception):
+class TranscriptionAuthError(Exception):
+    """The transcription provider rejected the API key (HTTP 401/403)."""
+
+
+class GroqAuthError(TranscriptionAuthError):
     """Groq rejected the API key (HTTP 401/403)."""
 
 

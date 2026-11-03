@@ -10,6 +10,7 @@ from app.database import init_db, AsyncSessionLocal
 from app.models import Recording, RemoteCleanup, User
 from app.auth import delete_user_sessions
 from app.services.groq import is_groq_key_format, mask_key, validate_key
+from app.services.transcriber import transcription_provider
 from app.services.storage import archive, cache, telegram
 from app.services.storage.artifacts import ensure_artifacts
 from app.services.storage.cache import cache_stats
@@ -149,6 +150,53 @@ async def verify_translation_key():
     if listed and settings.gemini_model not in listed:
         print(f"Warning: {settings.gemini_model} is not listed for this key.")
         print("Available flash models:", ", ".join(sorted(m for m in listed if "flash" in m)))
+
+
+async def verify_transcription_key():
+    """Check the shared OpenRouter key, or report that transcription goes to Groq."""
+    provider = transcription_provider()
+    if provider != "openrouter":
+        print(
+            f"Transcription uses Groq ({settings.whisper_model}) with the user's key. "
+            "Set TRANSCRIPTION_PROVIDER=openrouter to switch."
+        )
+        return
+    if not settings.openrouter_api_key:
+        print("TRANSCRIPTION_PROVIDER=openrouter, but OPENROUTER_API_KEY is empty.")
+        return
+
+    url = f"{settings.openrouter_base_url.rstrip('/')}/key"
+    try:
+        async with httpx.AsyncClient(timeout=settings.groq_validation_timeout) as client:
+            response = await client.get(
+                url, headers={"Authorization": f"Bearer {settings.openrouter_api_key}"}
+            )
+    except httpx.HTTPError as exc:
+        print(f"OpenRouter is unreachable: {exc}")
+        return
+
+    if response.status_code in (401, 403):
+        print(f"OpenRouter rejected the key (HTTP {response.status_code}).")
+        return
+    if response.status_code != 200:
+        print(f"OpenRouter answered HTTP {response.status_code}: {response.text[:200]}")
+        return
+
+    try:
+        info = (response.json() or {}).get("data") or {}
+    except (AttributeError, TypeError, ValueError):
+        info = {}
+
+    print(
+        f"OpenRouter key is valid; transcription uses "
+        f"{settings.openrouter_transcription_model}."
+    )
+    if info.get("limit") is None:
+        print("This key has no spend limit.")
+    elif info.get("limit_remaining") is not None:
+        print(f"Remaining spend limit: ${info['limit_remaining']} of ${info['limit']}.")
+    if info.get("usage") is not None:
+        print(f"Used so far: ${info['usage']}.")
 
 
 async def _check_and_store(db, user: User, status: str) -> None:
@@ -429,6 +477,11 @@ def main():
         help="Check the shared Gemini key (or report that translation uses Groq)",
     )
 
+    sub.add_parser(
+        "verify-transcription-key",
+        help="Check the shared OpenRouter key (or report that transcription uses Groq)",
+    )
+
     sub.add_parser("tg-discover", help="List the chats the bot has seen, to find the channel id")
 
     sub.add_parser("tg-status", help="Show the Telegram archive configuration and counters")
@@ -484,6 +537,8 @@ def main():
         asyncio.run(verify_key(args.user_id))
     elif args.cmd == "verify-translation-key":
         asyncio.run(verify_translation_key())
+    elif args.cmd == "verify-transcription-key":
+        asyncio.run(verify_transcription_key())
     elif args.cmd == "tg-discover":
         asyncio.run(tg_discover())
     elif args.cmd == "tg-status":

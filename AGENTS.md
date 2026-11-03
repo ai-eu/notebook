@@ -8,7 +8,8 @@ FastAPI веб-приложение для загрузки аудио/виде�
 
 - Backend: FastAPI, Uvicorn, SQLAlchemy 2.0 (async, aiosqlite), Pydantic Settings
 - Аудио: ffmpeg / ffprobe (конвертация, нарезка, длительность, битрейт)
-- Транскрибация: Groq Whisper (`whisper-large-v3`)
+- Транскрибация: Groq Whisper (`whisper-large-v3`); опционально OpenRouter STT
+  (`TRANSCRIPTION_PROVIDER=openrouter`, например `nvidia/nemotron-3.5-transcribe`)
 - Smart-форматирование: Groq Chat API
 - TTS: edge-tts, OpenAI, Grok, Azure Speech, Google TTS
 - Шумоподавление: noisereduce, soundfile
@@ -29,7 +30,7 @@ app/
   services/         — бизнес-логика
     converter.py    — ffmpeg/ffprobe обёртка
     denoiser.py     — шумоподавление (noisereduce)
-    transcriber.py  — Groq Whisper, chunking, concurrency, mock
+    transcriber.py  — Groq/OpenRouter STT, chunking, concurrency, mock
     formatter.py    — sentences, тайминги, render TXT, перевод
     http.py         — общий httpx.AsyncClient + retry 429/5xx
     groq.py         — валидация ключей Groq
@@ -90,6 +91,7 @@ MOCK_TRANSCRIPTION=true .venv/bin/uvicorn app.main:app --host 0.0.0.0 --port 800
 .venv/bin/python -m app.cli rebind-key <user_id> gsk_...
 .venv/bin/python -m app.cli verify-key <user_id>
 .venv/bin/python -m app.cli verify-translation-key   # общий ключ Gemini (или режим Groq)
+.venv/bin/python -m app.cli verify-transcription-key # общий ключ OpenRouter (или режим Groq)
 .venv/bin/python -m app.cli delete-user <user_id> [--purge-files]
 .venv/bin/python -m app.cli tg-discover
 .venv/bin/python -m app.cli storage-status
@@ -107,6 +109,10 @@ MOCK_TRANSCRIPTION=true .venv/bin/uvicorn app.main:app --host 0.0.0.0 --port 800
 ## Важные замечания
 
 - Groq API-ключи хранятся в БД в открытом тексте. `app.db` и `data/` приватные.
+- Транскрибация: `TRANSCRIPTION_PROVIDER=groq` (по умолчанию) считает на ключе
+  пользователя; `openrouter` — на общем `OPENROUTER_API_KEY`, тогда Groq остаётся только
+  для логина и `SMART_FORMAT`. OpenRouter не принимает `prompt` — словарь задаётся
+  `OPENROUTER_KEYTERMS`, тайминги берутся из `verbose_json` (`segments`, иначе `words`).
 - Требуется `ffmpeg` + `ffprobe` в системе.
 - Production: сервис `notebook` работает от пользователя `deployer` из
   `/opt/apps/notebook/.venv`, `uvicorn` слушает `127.0.0.1:5003`, nginx проксирует
@@ -143,7 +149,7 @@ MOCK_TRANSCRIPTION=true .venv/bin/uvicorn app.main:app --host 0.0.0.0 --port 800
 - Колонка перевода показывается выбором языка в компактной выпадайке (коды en/uk/pt/es); выбора по умолчанию нет (перевод не выводится даже при наличии кэша), состояние не сохраняется.
 - Перевод кэшируется как артефакт `translation:<lang>` с `source_sha256` (инвалидация по содержимому) и архивируется в Telegram-канал.
 - Настройки: `TRANSLATION_ENABLED`, `TRANSLATION_TARGET_LANGUAGES`, `TRANSLATION_DEFAULT_LANGUAGE`, `TRANSLATION_BATCH_CHARS`, `TRANSLATION_CONCURRENCY`, `TRANSLATION_MODEL`, `TRANSLATION_MAX_OUTPUT_TOKENS`, `TRANSLATION_TOKENS_PER_MINUTE`, `TRANSLATION_OUTPUT_TOKENS_PER_MINUTE`.
-- Провайдер перевода: один общий ключ Google AI Studio (`GEMINI_API_KEY`, модели `GEMINI_MODEL`/`GEMINI_MAX_OUTPUT_TOKENS`) на весь инстанс — при его наличии перевод идёт в Gemini через OpenAI-совместимый endpoint. Ключ не указан → перевод идёт на Groq с ключом пользователя (`resolve_groq_key`); логин и Whisper по-прежнему требуют Groq-ключ. Проверка ключа: `python -m app.cli verify-translation-key`.
+- Провайдер перевода: один общий ключ Google AI Studio (`GEMINI_API_KEY`, модели `GEMINI_MODEL`/`GEMINI_MAX_OUTPUT_TOKENS`) на весь инстанс — при его наличии перевод идёт в Gemini через OpenAI-совместимый endpoint. Ключ не указан → перевод идёт на Groq с ключом пользователя (`resolve_groq_key`); логин требует Groq-ключ, Whisper — только при `TRANSCRIPTION_PROVIDER=groq`. Проверка ключа: `python -m app.cli verify-translation-key`.
 - API: `GET /api/translate/{recording_id}?lang=<code>` отдаёт готовый перевод (200) либо `202 {"status":"running","done","total"}` — страница опрашивает эндпоинт, пока артефакт не появится. `DELETE /api/translate/{recording_id}?lang=<code>` сбрасывает кэш и отменяет идущую задачу. Ошибка Groq — HTTP 502, исчерпанный лимит Groq — HTTP 429, причина в `detail` и в логе (`logging.warning`); следующий запрос начинает попытку заново. Неверное число строк от модели — ошибка, а не пустые переводы.
 - Перевод идёт в фоновой задаче (`services/translation_jobs.py` через `JobRunner`), потому что Groq на free-tier даёт ~1000 выходных токенов в минуту: длинный транскрипт переводится минутами, а nginx/CDN режут такие синхронные запросы. Батчи разнесены по минутному окну (`_TokenBudget`), `max_tokens` не превышает `TRANSLATION_MAX_OUTPUT_TOKENS`, 429 повторяется с паузой `Retry-After` и тормозит все батчи, а не только сбойный.
 

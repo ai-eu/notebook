@@ -7,11 +7,12 @@ FastAPI web app for drag-and-drop audio/video upload, automatic MP3 conversion, 
 - Drag-and-drop upload of audio/video files.
 - Conversion to MP3 mono 48 kbps (~0.36 MB/min).
 - MP3 files with a bitrate up to 196 kbps are copied as-is (`-c:a copy`) to avoid re-encoding already-compressed audio.
-- Automatic chunking of long recordings: chunk duration is chosen based on the output audio bitrate so each chunk fits `TARGET_CHUNK_MB` and Groq's 25 MB limit.
+- Automatic chunking of long recordings: chunk duration is chosen based on the output audio bitrate so each chunk fits `TARGET_CHUNK_MB` and the provider's 25 MB upload limit.
 - Tags and a comment per recording: tags show as colored chips on the card (edit via the tag icon in the card corner), the comment is shown above the transcript on the transcript page.
 - Supports audio/video formats including Apple files: `.mp3`, `.wav`, `.ogg`, `.flac`, `.m4a`, `.aac`, `.caf`, `.aif`, `.aiff`, `.wma`, `.amr`, `.3gp`, `.webm`, `.mp4`, `.mov`, `.mkv`.
 - SQLite database with relative recording folder paths (`<user_id>/<recording_id>`) so the `data/` directory and database can be moved between servers.
 - Sign-in with a personal Groq API key: the key is stored with the account and used for that user's transcriptions, so everyone runs on their own quota.
+- Pluggable transcription: Groq Whisper by default, or an OpenRouter speech-to-text model (for example `nvidia/nemotron-3.5-transcribe`) through the shared `OPENROUTER_API_KEY`; switch it with `TRANSCRIPTION_PROVIDER`.
 - **Telegram-first storage:** the audio and original uploads live in a private channel; transcripts, sentence timings and translations live in SQLite. Local files survive for `LOCAL_RETENTION_DAYS` (7 by default) after a verified archive, then only the LRU audio cache remains. Users of the app do not need a Telegram account.
 - **Canonical sentence document:** the page, player and translation all read the same `sentences` artifact from SQLite. No fuzzy word matching or re-splitting on every page load.
 - Optional Groq-powered TXT formatting (`SMART_FORMAT`) for very long sentences; it is applied once during processing, not on download.
@@ -54,6 +55,23 @@ For local UI testing without a real key:
 ```bash
 MOCK_TRANSCRIPTION=true .venv/bin/uvicorn app.main:app --host 0.0.0.0 --port 8000
 ```
+
+## Alternative transcription provider
+
+Groq Whisper stays the default. To run transcription on OpenRouter instead:
+
+```bash
+TRANSCRIPTION_PROVIDER=openrouter
+OPENROUTER_API_KEY=sk-or-v1-...
+OPENROUTER_TRANSCRIPTION_MODEL=nvidia/nemotron-3.5-transcribe
+```
+
+OpenRouter is called through its OpenAI-compatible `POST /api/v1/audio/transcriptions`
+with `response_format=verbose_json`, so chunking, timings and the sentence document are
+unchanged. OpenRouter has no `prompt` field: bias the vocabulary with
+`OPENROUTER_KEYTERMS` (a JSON list) instead, and only for providers that support it.
+Groq is still used for sign-in and `SMART_FORMAT`. Check the key and the remaining spend
+limit with `python -m app.cli verify-transcription-key`.
 
 ## Tests
 
